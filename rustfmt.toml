@@ -1,0 +1,9 @@
+edition = "2021"
+empty_item_single_line = false
+# fn_args_layout = "Compressed"
+imports_layout = "Vertical"
+max_width = 120
+# use_small_heuristics = "Max"
+chain_width = 120
+fn_call_width = 60
+attr_fn_like_width = 60

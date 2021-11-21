@@ -1,0 +1,111 @@
+name: BUILD
+
+on:
+  push:
+
+jobs:
+  android:
+    runs-on: ubuntu-20.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+      with:
+        submodules: 'recursive'
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: aarch64-linux-android
+        override: true
+    - uses: actions-rs/cargo@v1
+      with:
+        use-cross: true
+        command: build
+        args: --release --target aarch64-linux-android
+    - run: mv ./target/aarch64-linux-android/release/dmlive ./dmlive-android
+    - uses: ncipollo/release-action@v1
+      with:
+        allowUpdates: true
+        tag: "release"
+        artifacts: "./dmlive-android"
+        token: ${{ secrets.GITHUB_TOKEN }}
+  aarch64:
+    runs-on: ubuntu-20.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+      with:
+        submodules: 'recursive'
+    - run: sudo apt-get install pkg-config libssl-dev p7zip-full
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: aarch64-unknown-linux-gnu
+        override: true
+    - uses: actions-rs/cargo@v1
+      with:
+        use-cross: true
+        command: build
+        args: --release --target aarch64-unknown-linux-gnu
+    - run: mv ./target/aarch64-unknown-linux-gnu/release/dmlive ./dmlive-aarch64
+
+    - uses: ncipollo/release-action@v1
+      with:
+        allowUpdates: true
+        tag: "release"
+        artifacts: "./dmlive-aarch64"
+        token: ${{ secrets.GITHUB_TOKEN }}
+  amd64:
+    runs-on: ubuntu-20.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+      with:
+        submodules: 'recursive'
+    - run: sudo apt-get install pkg-config libssl-dev p7zip-full
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: x86_64-unknown-linux-gnu
+        override: true
+    - uses: actions-rs/cargo@v1
+      with:
+        command: build
+        args: --release
+    - run: mv ./target/release/dmlive ./dmlive-amd64
+
+    - uses: ncipollo/release-action@v1
+      with:
+        allowUpdates: true
+        tag: "release"
+        artifacts: "./dmlive-amd64"
+        token: ${{ secrets.GITHUB_TOKEN }}
+  windows:
+    runs-on: ubuntu-20.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+      with:
+        submodules: 'recursive'
+    - run: sudo apt-get install pkg-config libssl-dev p7zip-full
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: x86_64-pc-windows-gnu
+        override: true
+    - uses: actions-rs/cargo@v1
+      with:
+        use-cross: true
+        command: build
+        args: --release --target x86_64-pc-windows-gnu
+    - run: mv ./target/release/dmlive.exe ./dmlive-win64.exe
+
+    - uses: ncipollo/release-action@v1
+      with:
+        allowUpdates: true
+        tag: "release"
+        artifacts: "./dmlive-win64.exe"
+        token: ${{ secrets.GITHUB_TOKEN }}
