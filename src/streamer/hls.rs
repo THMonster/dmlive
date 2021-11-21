@@ -1,37 +1,40 @@
-use std::{
-    collections::{HashSet, LinkedList},
-    convert::TryInto,
-    sync::{atomic::AtomicBool, Arc},
-};
-
+use crate::{config::ConfigManager, dmlive::DMLMessage, ipcmanager::DMLStream};
 use futures::pin_mut;
 use log::info;
 use reqwest::Client;
-use tokio::{
-    io::AsyncWriteExt,
-    net::{UnixListener, UnixStream},
-    sync::mpsc::Sender,
-    time::timeout,
+use std::{
+    collections::{HashSet, LinkedList},
+    convert::TryInto,
+    sync::Arc,
 };
+use tokio::{io::AsyncWriteExt, sync::mpsc::Sender};
 
 pub struct HLS {
     url: String,
-    stream_socket: String,
-    // stream_port: u16,
-    loading: Arc<AtomicBool>,
+    ipc_manager: Arc<crate::ipcmanager::IPCManager>,
+    cm: Arc<ConfigManager>,
+    mtx: async_channel::Sender<DMLMessage>,
 }
 
 impl HLS {
-    pub fn new(url: String, extra: String, loading: Arc<AtomicBool>) -> Self {
+    pub fn new(
+        url: String,
+        cm: Arc<ConfigManager>,
+        im: Arc<crate::ipcmanager::IPCManager>,
+        mtx: async_channel::Sender<DMLMessage>,
+    ) -> Self {
         HLS {
             url,
-            stream_socket: extra,
-            // stream_port: 11111,
-            loading,
+            ipc_manager: im,
+            cm,
+            mtx,
         }
     }
 
-    async fn decode_m3u8(m3u8: &str, old_urls: &mut HashSet<String>) -> Result<LinkedList<String>, Box<dyn std::error::Error>> {
+    async fn decode_m3u8(
+        m3u8: &str,
+        old_urls: &mut HashSet<String>,
+    ) -> Result<LinkedList<String>, Box<dyn std::error::Error>> {
         let lines: Vec<_> = m3u8.split("\n").collect();
         let mut sq = None;
         let mut urls = LinkedList::new();
@@ -81,19 +84,23 @@ impl HLS {
         Ok(ret)
     }
 
-    async fn download_m3u8(url: String, tx: Sender<String>, client: Arc<Client>, loading: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
+    async fn download_m3u8(
+        self: &Arc<Self>,
+        tx: Sender<String>,
+        client: Arc<Client>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let mut old_urls = HashSet::new();
         let mut interval: u64 = 1500;
         let mut m3u8_retry = 3u8;
         let mut first = true;
         loop {
             let now = std::time::Instant::now();
-            let mut urls = match client.get(&url).header("Connection", "keep-alive").send().await {
+            let mut urls = match client.get(&self.url).header("Connection", "keep-alive").send().await {
                 Ok(it) => {
                     m3u8_retry = 3;
                     let resp = it.text().await?;
                     if first {
-                        loading.store(false, std::sync::atomic::Ordering::SeqCst);
+                        self.mtx.send(DMLMessage::StreamStarted).await?;
                         first = false;
                     }
                     Self::decode_m3u8(&resp, &mut old_urls).await?
@@ -138,16 +145,18 @@ impl HLS {
         }
     }
 
-    async fn download(&self, mut stream: UnixStream) -> Result<(), Box<dyn std::error::Error>> {
+    async fn download(self: &Arc<Self>, mut stream: Box<dyn DMLStream>) -> Result<(), Box<dyn std::error::Error>> {
         // let mut sq = 0;
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(30);
-        let client = reqwest::Client::builder().user_agent(crate::utils::gen_ua()).timeout(tokio::time::Duration::from_secs(15)).build()?;
+        let client = reqwest::Client::builder()
+            .user_agent(crate::utils::gen_ua())
+            .timeout(tokio::time::Duration::from_secs(15))
+            .build()?;
         let client = Arc::new(client);
         let client1 = client.clone();
-        let url = self.url.clone();
-        let loading = self.loading.clone();
+        let s1 = self.clone();
         let m3u8_task = async move {
-            match Self::download_m3u8(url, tx, client1, loading).await {
+            match s1.download_m3u8(tx, client1).await {
                 Ok(_) => {}
                 Err(err) => {
                     info!("hls download m3u8 error: {:?}", err);
@@ -169,32 +178,8 @@ impl HLS {
         Ok(())
     }
 
-    pub async fn run(&self, arc_self: Arc<HLS>) -> Result<(), Box<dyn std::error::Error>> {
-        let mut listener = None;
-        let _ = timeout(
-            tokio::time::Duration::from_secs(10),
-            tokio::fs::remove_file(&self.stream_socket),
-        )
-        .await?;
-        for _ in 0..15 {
-            match UnixListener::bind(&self.stream_socket) {
-                Ok(it) => {
-                    listener = Some(it);
-                    break;
-                }
-                Err(_) => {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                    continue;
-                }
-            };
-        }
-        let (stream, _) = timeout(
-            tokio::time::Duration::from_secs(10),
-            listener.ok_or("unix socket bind failed")?.accept(),
-        )
-        .await??;
-        let self1 = arc_self.clone();
-        match self1.download(stream).await {
+    pub async fn run(self: &Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
+        match self.download(self.ipc_manager.get_stream_socket().await?).await {
             Ok(it) => it,
             Err(err) => {
                 info!("hls download error: {:?}", err);

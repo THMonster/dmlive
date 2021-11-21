@@ -9,7 +9,7 @@ use std::sync::Arc;
 pub struct Streamer {
     ipc_manager: Arc<crate::ipcmanager::IPCManager>,
     cm: Arc<ConfigManager>,
-    _mtx: async_channel::Sender<DMLMessage>,
+    mtx: async_channel::Sender<DMLMessage>,
 }
 
 impl Streamer {
@@ -21,11 +21,11 @@ impl Streamer {
         Self {
             ipc_manager: im,
             cm,
-            _mtx: mtx,
+            mtx,
         }
     }
 
-    pub async fn run(self: &Arc<Self>) -> Result<()> {
-        Ok()
+    pub async fn run(self: &Arc<Self>, rurl: &str) -> Result<()> {
+        Ok(())
     }
 }

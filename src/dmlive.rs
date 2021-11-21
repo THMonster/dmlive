@@ -8,6 +8,7 @@ pub enum DMLMessage {
     SetFontSize(usize),
     SetFontAlpha(f64),
     SetShowNick(bool),
+    StreamStarted,
 }
 
 pub struct DMLive {
