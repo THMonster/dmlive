@@ -1,0 +1,40 @@
+[package]
+name = "dmlive"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1.13", features = ["full"] }
+# tokio-rustls = "0.22"
+# webpki-roots = "*"
+# tokio-tungstenite = { version = "0.15", features = ["rustls-tls"] }
+tokio-tungstenite = { version = "*", features = ["native-tls-vendored"] }
+reqwest = { version = "*", default-features = false, features = ["gzip", "json", "native-tls-vendored"] }
+log = "*"
+env_logger = "*"
+clap = "2"
+httparse = "*"
+serde_json = "*"
+serde = { version = "1", features = ["derive"] }
+bincode = "*"
+rand = "*"
+flate2  = { version = "*", features = [] }
+regex = "*"
+fancy-regex = "*"
+uuid = { version = "0.8", features = ["v4"] }
+chrono = "*"
+url = "*"
+urlencoding = "*"
+base64 = "*"
+libc = "*"
+toml = "*"
+html-escape = "*"
+futures = "0.3"
+roxmltree = "*"
+async-channel = "1.6"
+directories = "4.0"
+anyhow = "1"
+bytes = "1.1"
+tars-stream = { path = "tars-stream"}
