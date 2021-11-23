@@ -20,20 +20,12 @@ impl Twitch {
         }
     }
 
-    async fn get_ws_info(
-        &self,
-        url: &str,
-    ) -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
-        let rid = Url::parse(url)?
-            .path_segments()
-            .ok_or("rid parse error 1")?
-            .last()
-            .ok_or("rid parse error 2")?
-            .to_string();
+    async fn get_ws_info(&self, url: &str) -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
+        let rid =
+            Url::parse(url)?.path_segments().ok_or("rid parse error 1")?.last().ok_or("rid parse error 2")?.to_string();
         let mut reg_datas: Vec<String> = Vec::new();
 
-        reg_datas
-            .push("CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership".to_owned());
+        reg_datas.push("CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership".to_owned());
         reg_datas.push("PASS SCHMOOPIIE".to_owned());
         let rn = rand::random::<u64>();
         let nick = format!("justinfan{}", 10000 + (rn % 80000));
@@ -44,10 +36,7 @@ impl Twitch {
         Ok(("wss://irc-ws.chat.twitch.tv".to_string(), reg_datas))
     }
 
-    fn decode_msg(
-        &self,
-        data: &mut Vec<u8>,
-    ) -> Result<Vec<HashMap<String, String>>, Box<dyn std::error::Error>> {
+    fn decode_msg(&self, data: &mut Vec<u8>) -> Result<Vec<HashMap<String, String>>, Box<dyn std::error::Error>> {
         let mut ret = Vec::new();
         let msg = String::from_utf8_lossy(data);
         for m in msg.split('\n') {
@@ -85,19 +74,14 @@ impl Twitch {
         let (ws_stream, _) = connect_async(&ws).await?;
         let (mut ws_write, mut ws_read) = ws_stream.split();
         for reg_data in reg_datas.drain(..) {
-            ws_write
-                .send(tokio_tungstenite::tungstenite::Message::text(reg_data))
-                .await?;
+            ws_write.send(tokio_tungstenite::tungstenite::Message::text(reg_data)).await?;
         }
         let hb = self.heartbeat.clone();
         tokio::spawn(async move {
             loop {
                 sleep(tokio::time::Duration::from_secs(20)).await;
                 let hb1 = hb.clone();
-                match ws_write
-                    .send(tokio_tungstenite::tungstenite::Message::text(hb1))
-                    .await
-                {
+                match ws_write.send(tokio_tungstenite::tungstenite::Message::text(hb1)).await {
                     Ok(_) => {}
                     _ => {
                         println!("send heartbeat failed!")
@@ -110,12 +94,14 @@ impl Twitch {
                 Ok(it) => {
                     let mut dm = self.decode_msg(it.into_data().as_mut())?;
                     for d in dm.drain(..) {
-                        dtx.send((
-                            d.get("color").unwrap_or(&"ffffff".into()).into(),
-                            d.get("name").unwrap_or(&"unknown".into()).into(),
-                            d.get("content").unwrap_or(&" ".into()).into(),
-                        ))
-                        .await?;
+                        if d.get("msg_type").unwrap_or(&"other".into()).eq("danmaku") {
+                            dtx.send((
+                                d.get("color").unwrap_or(&"ffffff".into()).into(),
+                                d.get("name").unwrap_or(&"unknown".into()).into(),
+                                d.get("content").unwrap_or(&" ".into()).into(),
+                            ))
+                            .await?;
+                        }
                     }
                 }
                 Err(e) => {

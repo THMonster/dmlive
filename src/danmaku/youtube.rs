@@ -24,16 +24,8 @@ fn get_param(vid: &str, cid: &str) -> String {
     let b15 = crate::utils::nm(15, 0);
 
     let s1_3: Vec<u8> = crate::utils::rs(1, vid.as_bytes());
-    let s1_5 = [
-        crate::utils::rs(1, cid.as_bytes()),
-        crate::utils::rs(2, vid.as_bytes()),
-    ]
-    .concat();
-    let s1 = [
-        crate::utils::rs(3, s1_3.as_ref()),
-        crate::utils::rs(5, s1_5.as_ref()),
-    ]
-    .concat();
+    let s1_5 = [crate::utils::rs(1, cid.as_bytes()), crate::utils::rs(2, vid.as_bytes())].concat();
+    let s1 = [crate::utils::rs(3, s1_3.as_ref()), crate::utils::rs(5, s1_5.as_ref())].concat();
     let s3 = crate::utils::rs(
         48687757,
         crate::utils::rs(1, vid.as_bytes().as_ref()).as_ref(),
@@ -70,15 +62,11 @@ fn get_param(vid: &str, cid: &str) -> String {
     let str19 = crate::utils::rs(19, crate::utils::nm(1, 0).as_ref());
     let timestamp5 = crate::utils::nm(20, ts);
     let entity = [
-        header, timestamp1, s6, s7, s8, body, timestamp3, timestamp4, s13, chattype, s17, str19,
-        timestamp5,
+        header, timestamp1, s6, s7, s8, body, timestamp3, timestamp4, s13, chattype, s17, str19, timestamp5,
     ]
     .concat();
     let continuation = crate::utils::rs(119693434, entity.as_ref());
-    url::form_urlencoded::byte_serialize(
-        base64::encode_config(continuation, base64::URL_SAFE).as_bytes(),
-    )
-    .collect()
+    url::form_urlencoded::byte_serialize(base64::encode_config(continuation, base64::URL_SAFE).as_bytes()).collect()
 }
 
 pub struct Youtube {
@@ -99,10 +87,7 @@ impl Youtube {
         }
     }
 
-    async fn get_room_info(
-        &self,
-        url: &str,
-    ) -> Result<(String, String), Box<dyn std::error::Error>> {
+    async fn get_room_info(&self, url: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
         let cid: String;
         let vid: String;
         let client = reqwest::Client::new();
@@ -124,12 +109,7 @@ impl Youtube {
                 .text()
                 .await?;
             let re = fancy_regex::Regex::new(r#""gridVideoRenderer"((.(?!"gridVideoRenderer"))(?!"style":"UPCOMING"))+"label":"(LIVE|LIVE NOW|PREMIERING NOW)"([\s\S](?!"style":"UPCOMING"))+?("gridVideoRenderer"|</script>)"#).unwrap();
-            let t = re
-                .captures(&resp)?
-                .ok_or("gri err 1")?
-                .get(0)
-                .ok_or("gri err 1-2")?
-                .as_str();
+            let t = re.captures(&resp)?.ok_or("gri err 1")?.get(0).ok_or("gri err 1-2")?.as_str();
             let re = Regex::new(r#""gridVideoRenderer".+?"videoId":"(.+?)""#).unwrap();
             vid = re.captures(t).ok_or("gri err 2")?[1].to_string();
         } else {
@@ -153,41 +133,20 @@ impl Youtube {
 
     fn decode_msg(&self, j: &Value) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
         let mut d = std::collections::HashMap::new();
-        let renderer = j
-            .pointer("/addChatItemAction/item/liveChatTextMessageRenderer")
-            .ok_or("dm err 1")?;
+        let renderer = j.pointer("/addChatItemAction/item/liveChatTextMessageRenderer").ok_or("dm err 1")?;
         d.insert(
             "name".to_owned(),
-            renderer
-                .pointer("/authorName/simpleText")
-                .ok_or("dm err 2")?
-                .as_str()
-                .ok_or("dm err 2-2")?
-                .to_string(),
+            renderer.pointer("/authorName/simpleText").ok_or("dm err 2")?.as_str().ok_or("dm err 2-2")?.to_string(),
         );
-        let runs = renderer
-            .pointer("/message/runs")
-            .ok_or("dm err 3")?
-            .as_array()
-            .ok_or("dm err 3-2")?;
+        let runs = renderer.pointer("/message/runs").ok_or("dm err 3")?.as_array().ok_or("dm err 3-2")?;
         let mut msg = "".to_owned();
         for r in runs {
             match r.pointer("/emoji") {
                 Some(it) => {
-                    msg.push_str(
-                        it.pointer("/shortcuts/0")
-                            .ok_or("dm err 4")?
-                            .as_str()
-                            .ok_or("dm err 4-2")?,
-                    );
+                    msg.push_str(it.pointer("/shortcuts/0").ok_or("dm err 4")?.as_str().ok_or("dm err 4-2")?);
                 }
                 None => {
-                    msg.push_str(
-                        r.pointer("/text")
-                            .ok_or("dm err 5")?
-                            .as_str()
-                            .ok_or("dm err 5-2")?,
-                    );
+                    msg.push_str(r.pointer("/text").ok_or("dm err 5")?.as_str().ok_or("dm err 5-2")?);
                 }
             }
         }
@@ -229,9 +188,7 @@ impl Youtube {
 
         ctn.clear();
         // println!("{:#?}", &resp);
-        let con = resp
-            .pointer("/continuationContents/liveChatContinuation/continuations/0")
-            .ok_or("gsc err 1")?;
+        let con = resp.pointer("/continuationContents/liveChatContinuation/continuations/0").ok_or("gsc err 1")?;
 
         // println!("{:#?}", &con);
         let metadata = match con.pointer("/invalidationContinuationData") {
@@ -240,19 +197,11 @@ impl Youtube {
                 Some(it) => it,
                 None => match con.pointer("/reloadContinuationData") {
                     Some(it) => it,
-                    None => con
-                        .pointer("/liveChatReplayContinuationData")
-                        .ok_or("gsc err 2")?,
+                    None => con.pointer("/liveChatReplayContinuationData").ok_or("gsc err 2")?,
                 },
             },
         };
-        ctn.push_str(
-            metadata
-                .pointer("/continuation")
-                .ok_or("gsc err 3")?
-                .as_str()
-                .ok_or("gsc err 3-2")?,
-        );
+        ctn.push_str(metadata.pointer("/continuation").ok_or("gsc err 3")?.as_str().ok_or("gsc err 3-2")?);
         let actions = resp
             .pointer("/continuationContents/liveChatContinuation/actions")
             .ok_or("gsc err 4")?
@@ -287,13 +236,15 @@ impl Youtube {
                     if dm.len() > 0 {
                         interval = 2000 / dm.len() as u64;
                         for d in dm.drain(..) {
-                            dtx.send((
-                                d.get("color").unwrap_or(&"ffffff".into()).into(),
-                                d.get("name").unwrap_or(&"unknown".into()).into(),
-                                d.get("content").unwrap_or(&" ".into()).into(),
-                            ))
-                            .await?;
-                            sleep(tokio::time::Duration::from_millis(interval)).await;
+                            if d.get("msg_type").unwrap_or(&"other".into()).eq("danmaku") {
+                                dtx.send((
+                                    d.get("color").unwrap_or(&"ffffff".into()).into(),
+                                    d.get("name").unwrap_or(&"unknown".into()).into(),
+                                    d.get("content").unwrap_or(&" ".into()).into(),
+                                ))
+                                .await?;
+                                sleep(tokio::time::Duration::from_millis(interval)).await;
+                            }
                         }
                     } else {
                         sleep(tokio::time::Duration::from_secs(2)).await;

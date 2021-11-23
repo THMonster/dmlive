@@ -53,16 +53,9 @@ impl Huya {
         Huya { heartbeat }
     }
 
-    async fn get_ws_info(
-        &self,
-        url: &str,
-    ) -> Result<(String, Vec<u8>), Box<dyn std::error::Error>> {
-        let rid = Url::parse(url)?
-            .path_segments()
-            .ok_or("rid parse error 1")?
-            .last()
-            .ok_or("rid parse error 2")?
-            .to_string();
+    async fn get_ws_info(&self, url: &str) -> Result<(String, Vec<u8>), Box<dyn std::error::Error>> {
+        let rid =
+            Url::parse(url)?.path_segments().ok_or("rid parse error 1")?.last().ok_or("rid parse error 2")?.to_string();
         let client = reqwest::Client::new();
         let resp = client
             .get(format!("https://m.huya.com/{}", &rid))
@@ -78,11 +71,7 @@ impl Huya {
         let re = Regex::new(r#"window.HNF_GLOBAL_INIT *= *(\{.+?\})\s*</script>"#).unwrap();
         let j = re.captures(&resp).ok_or("gwi err 1")?[1].to_string();
         let j: serde_json::Value = serde_json::from_str(&j)?;
-        let ayyuid = j
-            .pointer("/roomInfo/tProfileInfo/lUid")
-            .ok_or("gwi err 2")?
-            .as_u64()
-            .ok_or("gwi err 2-2")?;
+        let ayyuid = j.pointer("/roomInfo/tProfileInfo/lUid").ok_or("gwi err 2")?.as_u64().ok_or("gwi err 2-2")?;
 
         let mut t = Vec::new();
         t.push(format!("live:{}", ayyuid));
@@ -100,26 +89,15 @@ impl Huya {
         ))
     }
 
-    fn decode_msg(
-        &self,
-        data: &mut Vec<u8>,
-    ) -> Result<Vec<HashMap<String, String>>, Box<dyn std::error::Error>> {
+    fn decode_msg(&self, data: &mut Vec<u8>) -> Result<Vec<HashMap<String, String>>, Box<dyn std::error::Error>> {
         let mut ret = Vec::new();
         // println!("{}", String::from_utf8_lossy(&data));
         let mut ios = TarsDecoder::from(data.to_owned());
         let mut dm = HashMap::new();
         if ios.read_int32(0, false, -1)? == 7 {
-            let mut ios = TarsDecoder::from(&ios.read_bytes(
-                1,
-                false,
-                tars_stream::bytes::Bytes::from(""),
-            )?);
+            let mut ios = TarsDecoder::from(&ios.read_bytes(1, false, tars_stream::bytes::Bytes::from(""))?);
             if ios.read_int64(1, false, -1)? == 1400 {
-                let mut ios = TarsDecoder::from(&ios.read_bytes(
-                    2,
-                    false,
-                    tars_stream::bytes::Bytes::from(""),
-                )?);
+                let mut ios = TarsDecoder::from(&ios.read_bytes(2, false, tars_stream::bytes::Bytes::from(""))?);
                 let user = ios.read_struct(
                     0,
                     false,
@@ -175,18 +153,13 @@ impl Huya {
         let (ws, reg_data) = self.get_ws_info(url).await?;
         let (ws_stream, _) = connect_async(&ws).await?;
         let (mut ws_write, mut ws_read) = ws_stream.split();
-        ws_write
-            .send(tokio_tungstenite::tungstenite::Message::Binary(reg_data))
-            .await?;
+        ws_write.send(tokio_tungstenite::tungstenite::Message::Binary(reg_data)).await?;
         let hb = self.heartbeat.clone();
         tokio::spawn(async move {
             loop {
                 sleep(tokio::time::Duration::from_secs(20)).await;
                 let hb1 = hb.clone();
-                match ws_write
-                    .send(tokio_tungstenite::tungstenite::Message::Binary(hb1))
-                    .await
-                {
+                match ws_write.send(tokio_tungstenite::tungstenite::Message::Binary(hb1)).await {
                     Ok(_) => {}
                     _ => {
                         println!("send heartbeat failed!")
@@ -199,12 +172,14 @@ impl Huya {
                 Ok(it) => {
                     if let Ok(mut dm) = self.decode_msg(it.into_data().as_mut()) {
                         for d in dm.drain(..) {
-                            dtx.send((
-                                d.get("color").unwrap_or(&"ffffff".into()).into(),
-                                d.get("name").unwrap_or(&"unknown".into()).into(),
-                                d.get("content").unwrap_or(&" ".into()).into(),
-                            ))
-                            .await?;
+                            if d.get("msg_type").unwrap_or(&"other".into()).eq("danmaku") {
+                                dtx.send((
+                                    d.get("color").unwrap_or(&"ffffff".into()).into(),
+                                    d.get("name").unwrap_or(&"unknown".into()).into(),
+                                    d.get("content").unwrap_or(&" ".into()).into(),
+                                ))
+                                .await?;
+                            }
                         }
                     }
                 }

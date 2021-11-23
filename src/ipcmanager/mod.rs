@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::anyhow;
 use async_channel::Receiver;
 use futures::{
@@ -9,6 +11,8 @@ use tokio::{
     net::{TcpListener, TcpStream, UnixListener, UnixStream},
 };
 use uuid::Uuid;
+
+use crate::config::ConfigManager;
 
 pub trait DMLStream: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
 impl<T> DMLStream for T where T: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
@@ -33,14 +37,12 @@ pub struct IPCManager {
 }
 
 impl IPCManager {
-    pub fn new(tp: &str, plat: u8) -> Self {
-        let mut is_dash = false;
-        if tp.eq("youtube") {
-            is_dash = true;
+    pub fn new(cm: Arc<ConfigManager>, plat: u8) -> Self {
+        let is_dash = if cm.room_url.contains("youtube.com") {
+            true
         } else {
-            is_dash = false;
-        }
-
+            false
+        };
         let base_uuid = Uuid::new_v4().to_hyphenated().to_string();
         IPCManager {
             is_dash,
@@ -70,13 +72,18 @@ impl IPCManager {
                 "{}/dml-{}-dm",
                 &self.base_socket_dir, &self.base_uuid
             ))
-            .await;
+            .await?;
+            tokio::fs::remove_file(format!(
+                "{}/dml-{}-mpv",
+                &self.base_socket_dir, &self.base_uuid
+            ))
+            .await?;
             if !self.is_dash {
                 tokio::fs::remove_file(format!(
                     "{}/dml-{}-s",
                     &self.base_socket_dir, &self.base_uuid
                 ))
-                .await;
+                .await?;
             }
         }
         Ok(())

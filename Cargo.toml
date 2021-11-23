@@ -38,3 +38,8 @@ directories = "4.0"
 anyhow = "1"
 bytes = "1.1"
 tars-stream = { path = "tars-stream"}
+
+[profile.release]
+panic = 'abort'
+opt-level = 3
+lto = true

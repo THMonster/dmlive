@@ -1,18 +1,18 @@
 mod config;
-mod utils;
 mod danmaku;
 mod dmlive;
-mod ipcmanager;
 mod ffmpeg;
+mod ipcmanager;
+mod mpv;
 mod streamer;
 mod streamfinder;
-mod mpv;
+mod utils;
 
 use std::sync::Arc;
 
 use clap::Arg;
 use log::*;
-use tokio::runtime::Builder;
+use tokio::{runtime::Builder, task};
 
 fn main() {
     let ma = clap::App::new("dmlive")
@@ -24,12 +24,7 @@ fn main() {
                 .required(true)
                 .takes_value(true),
         )
-        .arg(
-            Arg::with_name("log-level")
-                .long("log-level")
-                .required(false)
-                .takes_value(true),
-        )
+        .arg(Arg::with_name("log-level").long("log-level").required(false).takes_value(true))
         .version(clap::crate_version!())
         .get_matches();
     let log_level = match ma.value_of("log-level").unwrap_or("3").parse().unwrap_or(3) {
@@ -41,22 +36,26 @@ fn main() {
     };
     env_logger::Builder::new().filter(None, log_level).init();
 
-    Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async move {
-            let proj_dirs = directories::ProjectDirs::from("com", "THMonster", "dmlive").unwrap();
-            let d = proj_dirs.config_dir();
-            let _ = tokio::fs::create_dir_all(&d).await;
-            let config_path = d.join("config.toml");
-            let _ = tokio::fs::File::create(&config_path).await;
-            let cm = Arc::new(crate::config::ConfigManager::new(
-                config_path,
-                ma.value_of("room-url").unwrap(),
-            ));
-            let dml = dmlive::DMLive::new(cm).await;
-            let dml = Arc::new(dml);
-            dml.run().await;
-        })
+    Builder::new_current_thread().enable_all().build().unwrap().block_on(async move {
+        let local = task::LocalSet::new();
+        // Run the local task set.
+        local
+            .run_until(async move {
+                let proj_dirs = directories::ProjectDirs::from("com", "THMonster", "dmlive").unwrap();
+                let d = proj_dirs.config_dir();
+                let _ = tokio::fs::create_dir_all(&d).await;
+                let config_path = d.join("config.toml");
+                if !config_path.exists() {
+                    let _ = tokio::fs::File::create(&config_path).await;
+                }
+                let cm = Arc::new(crate::config::ConfigManager::new(
+                    config_path,
+                    ma.value_of("room-url").unwrap(),
+                ));
+                let dml = dmlive::DMLive::new(cm).await;
+                let dml = Arc::new(dml);
+                dml.run().await;
+            })
+            .await;
+    })
 }

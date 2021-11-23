@@ -1,8 +1,8 @@
+use crate::{config::ConfigManager, dmlive::DMLMessage, ipcmanager::DMLStream};
 use futures::pin_mut;
 use log::{info, warn};
 use std::sync::{atomic::AtomicBool, Arc};
 use tokio::io::AsyncWriteExt;
-use crate::{config::ConfigManager, dmlive::DMLMessage, ipcmanager::DMLStream};
 
 pub struct FLV {
     url: String,
@@ -27,7 +27,6 @@ impl FLV {
     }
 
     async fn download(&self, mut stream: Box<dyn DMLStream>) -> Result<(), Box<dyn std::error::Error>> {
-        // let mut sq = 0;
         let client = reqwest::Client::builder()
             .user_agent(crate::utils::gen_ua())
             .connect_timeout(tokio::time::Duration::from_secs(10))
@@ -56,14 +55,18 @@ impl FLV {
             let mut resp = client.get(url).header("Referer", room_url).send().await?;
             self.mtx.send(DMLMessage::StreamStarted).await?;
             while let Some(chunk) = resp.chunk().await? {
-                stream.write_all(&chunk).await?;
+                match stream.write_all(&chunk).await {
+                    Ok(it) => it,
+                    Err(err) => {
+                        info!("flv download error: {}", err);
+                        return Ok(());
+                    }
+                };
                 fd1.store(true, std::sync::atomic::Ordering::SeqCst);
             }
             Ok::<(), Box<dyn std::error::Error>>(())
         };
-        pin_mut!(watchdog_task);
-        pin_mut!(ts_task);
-        let _ = futures::future::select(watchdog_task, ts_task).await;
+        let _ = futures::future::select(Box::pin(watchdog_task), Box::pin(ts_task)).await;
         Ok(())
     }
 

@@ -1,5 +1,6 @@
 use crate::{config::ConfigManager, dmlive::DMLMessage};
 use anyhow::*;
+use log::info;
 use std::sync::Arc;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
@@ -50,17 +51,40 @@ impl MpvControl {
         Ok(ret)
     }
 
-    pub async fn reload_video(&self, file_path: &str) -> Result<()> {
+    pub async fn reload_video(&self) -> Result<()> {
         self.mpv_command_tx
             .send(format!(
-                r#"{{ "command": ["loadfile", "{}"] }}\n"#,
-                &file_path
+                "{{ \"command\": [\"loadfile\", \"{}\"] }}\n            ",
+                self.ipc_manager.get_f2m_socket_path()
             ))
             .await?;
         Ok(())
     }
 
-    pub async fn run(self: &Arc<Self>, title: &str) -> Result<()> {
+    pub async fn quit(&self) -> Result<()> {
+        self.mpv_command_tx.send("{ \"command\": [\"quit\"] }\n".into()).await?;
+        Ok(())
+    }
+
+    pub async fn stop(&self) -> Result<()> {
+        self.mpv_command_tx.send("{ \"command\": [\"stop\"] }\n".into()).await?;
+        Ok(())
+    }
+
+    async fn handle_mpv_event(self: &Arc<Self>, line: &str) -> Result<()> {
+        let j: serde_json::Value = serde_json::from_str(&line)?;
+        let event = j.pointer("/event").ok_or(anyhow!("hme err 1"))?.as_str().ok_or(anyhow!("hme err 2"))?;
+        if event.eq("end-file") {
+            let s1 = self.clone();
+            tokio::task::spawn_local(async move {
+                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                let _ = s1.reload_video().await;
+            });
+        }
+        Ok(())
+    }
+
+    pub async fn run(self: &Arc<Self>) -> Result<()> {
         let mut mpv = self.create_mpv_command(0).await?.kill_on_drop(true).spawn().unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
         let s = UnixStream::connect(self.ipc_manager.get_mpv_socket_path()).await?;
@@ -75,9 +99,11 @@ impl MpvControl {
         tokio::task::spawn_local(async move {
             let mut reader = tokio::io::BufReader::new(usocket_read).lines();
             while let Some(line) = reader.next_line().await.unwrap() {
-                println!("{}", line);
+                info!("mpv rpc: {}", &line);
+                let _ = s2.handle_mpv_event(&line).await;
             }
         });
+        let _ = self.reload_video().await;
         mpv.wait().await?;
         Ok(())
     }

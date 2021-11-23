@@ -19,25 +19,29 @@ impl FfmpegControl {
     }
 
     pub async fn create_ff_command(&self, title: &str) -> Result<Command> {
+        let stream_type = &*self.cm.stream_type.read().await;
         let mut ret = Command::new("ffmpeg");
-        ret.args(&["-y", "-xerror"]).arg("-loglevel").arg("quiet");
+        ret.args(&["-y", "-xerror"]);
         // ret.arg("-report");
-        if self.ipc_manager.is_dash {
-            ret.arg("-i").arg(self.ipc_manager.get_video_socket_path());
-            ret.arg("-i").arg(self.ipc_manager.get_audio_socket_path());
-        } else {
-            ret.arg("-i").arg(self.ipc_manager.get_stream_socket_path());
+        ret.arg("-loglevel").arg("quiet");
+        match stream_type {
+            crate::config::StreamType::DASH => {
+                ret.arg("-i").arg(self.ipc_manager.get_video_socket_path());
+                ret.arg("-i").arg(self.ipc_manager.get_audio_socket_path());
+                ret.arg("-i").arg(self.ipc_manager.get_danmaku_socket_path());
+                ret.args(&["-map", "0:v:0", "-map", "1:a:0", "-map", "2:s:0"]);
+            }
+            _ => {
+                ret.arg("-i").arg(self.ipc_manager.get_stream_socket_path());
+                ret.arg("-i").arg(self.ipc_manager.get_danmaku_socket_path());
+                ret.args(&["-map", "0:v:0", "-map", "0:a:0", "-map", "1:s:0"]);
+            }
         }
-        ret.arg("-i").arg(self.ipc_manager.get_danmaku_socket_path());
-        ret.args(&["-map", "v:0", "-map", "a:0", "-map", "s:0"]);
-        ret.args(&[
-            "-c",
-            "copy",
-            "-metadata",
-            format!("title={}", &title).as_str(),
-            "-f",
-            "matroska",
-        ]);
+        ret.args(&["-c", "copy"]);
+        if matches!(stream_type, crate::config::StreamType::HLS) {
+            ret.args(&["-c:a", "pcm_s16le"]);
+        }
+        ret.args(&["-metadata", format!("title={}", &title).as_str(), "-f", "matroska"]);
         ret.arg("-listen").arg("1").arg(self.ipc_manager.get_f2m_socket_path());
         Ok(ret)
     }

@@ -1,3 +1,4 @@
+use bytes::{BufMut, BytesMut};
 use serde::Serialize;
 
 pub fn get_mkv_header() -> Vec<u8> {
@@ -110,5 +111,23 @@ impl DMKVCluster {
             block_duration_size: 0x84,
             block_duration_content: speed as u32,
         }
+    }
+    pub fn bin(&self) -> BytesMut {
+        let mut ret = BytesMut::new();
+        ret.put_u32(self.cluster_id);
+        ret.put_u64(self.cluster_size);
+        ret.put_u8(self.timestamp_id);
+        ret.put_u8(self.timestamp_size);
+        ret.put_u64(self.timestamp);
+        ret.put_u8(self.block_group_id);
+        ret.put_u32(self.block_group_size);
+        ret.put_u8(self.block_id);
+        ret.put_u32(self.block_size);
+        ret.put_u32(self.block_content_header);
+        ret.put(self.block_content.as_ref());
+        ret.put_u8(self.block_duration_id);
+        ret.put_u8(self.block_duration_size);
+        ret.put_u32(self.block_duration_content);
+        ret
     }
 }
