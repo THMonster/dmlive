@@ -64,21 +64,9 @@ impl DMLive {
         tokio::task::spawn_local(async move {
             s1.dispatch().await;
         });
-        let (title, urls) = match self.sf.run().await {
-            Ok(it) => it,
-            Err(_) => {
-                let _ = self.ipc_manager.stop().await;
-                return;
-            }
-        };
-        self.cm.set_stream_type(&urls[0]).await;
         let s2 = self.clone();
         tokio::task::spawn_local(async move {
-            let _ = s2.fc.run(&title).await;
-        });
-        let s3 = self.clone();
-        tokio::task::spawn_local(async move {
-            let _ = s3.st.run(urls).await;
+            let _ = s2.restart().await;
         });
         let _ = self.mc.run().await;
         match self.ipc_manager.stop().await {
@@ -114,6 +102,25 @@ impl DMLive {
         if matches!(self.state.read().await.deref(), DMLState::Exiting) {
             return;
         }
+        // let _ = self.mc.reload_video().await;
+        let (title, urls) = match self.sf.run().await {
+            Ok(it) => it,
+            Err(_) => {
+                let _ = self.mc.quit().await;
+                return;
+            }
+        };
+        self.cm.set_stream_type(&urls[0]).await;
+        let s2 = self.clone();
+        tokio::task::spawn_local(async move {
+            let _ = s2.fc.run(&title).await;
+            info!("ffmpeg exit");
+            let _ = s2.restart().await;
+        });
+        let s3 = self.clone();
+        tokio::task::spawn_local(async move {
+            let _ = s3.st.run(urls).await;
+        });
     }
 
     pub async fn stop(self: &Arc<Self>) {

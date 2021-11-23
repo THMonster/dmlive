@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::*;
-use tokio::process::Command;
+use tokio::{io::AsyncWriteExt, process::Command};
 
 use crate::{config::ConfigManager, dmlive::DMLMessage};
 
@@ -47,7 +47,18 @@ impl FfmpegControl {
     }
 
     pub async fn run(self: &Arc<Self>, title: &str) -> Result<()> {
-        let mut ff = self.create_ff_command(&title).await?.kill_on_drop(true).spawn().unwrap();
+        let mut ff = self
+            .create_ff_command(&title)
+            .await?
+            .stdin(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut ffstdin = ff.stdin.take().unwrap();
+        // tokio::task::spawn_local(async move {
+        //     tokio::time::sleep(tokio::time::Duration::from_millis(10000)).await;
+        //     let _ = ffstdin.write_all("q\n".as_bytes()).await;
+        // });
         ff.wait().await?;
         Ok(())
     }

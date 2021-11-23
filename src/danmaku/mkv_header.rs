@@ -1,5 +1,9 @@
+use anyhow::*;
 use bytes::{BufMut, BytesMut};
 use serde::Serialize;
+use tokio::io::AsyncWriteExt;
+
+use crate::ipcmanager::DMLStream;
 
 pub fn get_mkv_header() -> Vec<u8> {
     vec![
@@ -112,22 +116,21 @@ impl DMKVCluster {
             block_duration_content: speed as u32,
         }
     }
-    pub fn bin(&self) -> BytesMut {
-        let mut ret = BytesMut::new();
-        ret.put_u32(self.cluster_id);
-        ret.put_u64(self.cluster_size);
-        ret.put_u8(self.timestamp_id);
-        ret.put_u8(self.timestamp_size);
-        ret.put_u64(self.timestamp);
-        ret.put_u8(self.block_group_id);
-        ret.put_u32(self.block_group_size);
-        ret.put_u8(self.block_id);
-        ret.put_u32(self.block_size);
-        ret.put_u32(self.block_content_header);
-        ret.put(self.block_content.as_ref());
-        ret.put_u8(self.block_duration_id);
-        ret.put_u8(self.block_duration_size);
-        ret.put_u32(self.block_duration_content);
-        ret
+    pub async fn write_to_socket(&self, socket: &mut Box<dyn DMLStream>) -> Result<()> {
+        socket.write_u32(self.cluster_id).await?;
+        socket.write_u64(self.cluster_size).await?;
+        socket.write_u8(self.timestamp_id).await?;
+        socket.write_u8(self.timestamp_size).await?;
+        socket.write_u64(self.timestamp).await?;
+        socket.write_u8(self.block_group_id).await?;
+        socket.write_u32(self.block_group_size).await?;
+        socket.write_u8(self.block_id).await?;
+        socket.write_u32(self.block_size).await?;
+        socket.write_u32(self.block_content_header).await?;
+        socket.write(&self.block_content).await?;
+        socket.write_u8(self.block_duration_id).await?;
+        socket.write_u8(self.block_duration_size).await?;
+        socket.write_u32(self.block_duration_content).await?;
+        Ok(())
     }
 }

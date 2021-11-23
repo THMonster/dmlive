@@ -1,6 +1,5 @@
 use std::{convert::TryInto, sync::Arc};
 
-use futures::pin_mut;
 use log::info;
 use reqwest::Response;
 use tokio::io::AsyncWriteExt;
@@ -112,7 +111,7 @@ impl Youtube {
             }
 
             if resp.status() != 200 {
-                println!("video stream error: {:?}", &resp.status());
+                info!("video stream error: {:?}", &resp.status());
                 return Ok(());
             }
             if (head_sq - sq) > 1 {
@@ -168,8 +167,6 @@ impl Youtube {
     }
 
     pub async fn run(self: &Arc<Self>) {
-        let url_v = self.url_v.clone();
-        let url_a = self.url_a.clone();
         let sq = match self.get_dash_sq().await {
             Some(it) => it,
             None => {
@@ -195,9 +192,7 @@ impl Youtube {
                 }
             }
         };
-        pin_mut!(vtask);
-        pin_mut!(atask);
-        let _ = futures::future::select(vtask, atask).await;
+        let _ = futures::future::select(Box::pin(vtask), Box::pin(atask)).await;
         info!("youtube streamer exit");
     }
 }

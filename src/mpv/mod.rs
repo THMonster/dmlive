@@ -1,3 +1,5 @@
+pub mod cmdparser;
+
 use crate::{config::ConfigManager, dmlive::DMLMessage};
 use anyhow::*;
 use log::info;
@@ -58,6 +60,8 @@ impl MpvControl {
                 self.ipc_manager.get_f2m_socket_path()
             ))
             .await?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        let _ = self.mpv_command_tx.send("{ \"command\": [\"get_property\", \"video-params\"] }\n".into()).await;
         Ok(())
     }
 
@@ -71,6 +75,21 @@ impl MpvControl {
         Ok(())
     }
 
+    pub async fn init_mpv_rpc(&self) -> Result<()> {
+        self.mpv_command_tx
+            .send(
+                r#"{ "command": ["keybind", "alt+r", "script-message qlp:r"] }
+{ "command": ["keybind", "alt+z", "script-message qlp:fsdown"] }
+{ "command": ["keybind", "alt+x", "script-message qlp:fsup"] }
+{ "command": ["keybind", "alt+i", "script-message qlp:nick"] }
+"#
+                .into(),
+            )
+            .await?;
+
+        Ok(())
+    }
+
     async fn handle_mpv_event(self: &Arc<Self>, line: &str) -> Result<()> {
         let j: serde_json::Value = serde_json::from_str(&line)?;
         let event = j.pointer("/event").ok_or(anyhow!("hme err 1"))?.as_str().ok_or(anyhow!("hme err 2"))?;
@@ -80,6 +99,13 @@ impl MpvControl {
                 tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
                 let _ = s1.reload_video().await;
             });
+        } else if event.eq("client-message") {
+            let cmds = cmdparser::CmdParser::new(
+                j.pointer("/args/0").ok_or(anyhow!("hme err 3"))?.as_str().ok_or(anyhow!("hme err 4"))?,
+            );
+            if cmds.restart {
+                self.stop().await?;
+            }
         }
         Ok(())
     }
@@ -103,6 +129,7 @@ impl MpvControl {
                 let _ = s2.handle_mpv_event(&line).await;
             }
         });
+        let _ = self.init_mpv_rpc().await;
         let _ = self.reload_video().await;
         mpv.wait().await?;
         Ok(())

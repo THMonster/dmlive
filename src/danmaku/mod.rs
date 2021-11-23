@@ -8,7 +8,6 @@ mod youtube;
 use crate::{config::ConfigManager, dmlive::DMLMessage, ipcmanager::DMLStream};
 use anyhow::*;
 use async_channel::Sender;
-use bincode::Options;
 use log::info;
 use std::sync::Arc;
 use tokio::{io::AsyncWriteExt, sync::RwLock, task::spawn_local};
@@ -131,10 +130,7 @@ impl Danmaku {
             )
         };
         *read_order = read_order.saturating_add(1);
-        // let mkv_bin = bincode::DefaultOptions::new().with_big_endian().with_fixint_encoding().serialize(&cluster)?;
-        let mkv_bin = cluster.bin();
-        // println!("{:?}", &mkv_bin);
-        match socket.write_all(&mkv_bin).await {
+        match cluster.write_to_socket(socket).await {
             Ok(_) => {}
             Err(_) => return Err(anyhow!("socket error")),
         };
