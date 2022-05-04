@@ -1,10 +1,18 @@
 use crate::{
-    config::ConfigManager, danmaku::Danmaku, ffmpeg::FfmpegControl, ipcmanager::IPCManager, mpv::MpvControl,
-    streamer::Streamer, streamfinder::StreamFinder,
+    config::ConfigManager,
+    danmaku::Danmaku,
+    ffmpeg::FfmpegControl,
+    ipcmanager::IPCManager,
+    mpv::MpvControl,
+    streamer::Streamer,
+    streamfinder::StreamFinder,
 };
 use async_channel::Receiver;
 use log::info;
-use std::{ops::Deref, sync::Arc};
+use std::{
+    ops::Deref,
+    sync::Arc,
+};
 use tokio::sync::RwLock;
 
 pub enum DMLMessage {
@@ -37,7 +45,7 @@ pub struct DMLive {
 
 impl DMLive {
     pub async fn new(cm: Arc<ConfigManager>) -> Self {
-        let mut im = IPCManager::new(cm.clone(), if cfg!(target_os = "linux") { 0 } else { 1 });
+        let mut im = IPCManager::new(cm.clone());
         im.run().await.unwrap();
         let im = Arc::new(im);
         let (mtx, mrx) = async_channel::unbounded();
@@ -102,16 +110,21 @@ impl DMLive {
                     self.quit().await;
                 }
                 DMLMessage::SetVideoRes((w, h)) => {
-                    self.dm.set_ratio_scale(w, h).await;
+                    let s1 = self.clone();
+                    // danmaku task
+                    tokio::task::spawn_local(async move {
+                        if matches!(s1.cm.site, crate::config::Site::BiliVideo) {
+                            let _ = s1.dm.run_bilivideo(16.0 * h as f64 / w as f64 / 9.0).await;
+                        } else {
+                            let _ = s1.dm.run(16.0 * h as f64 / w as f64 / 9.0).await;
+                        }
+                    });
                 }
                 DMLMessage::GoToBVPage(p) => {
                     match self.sf.run_bilivideo(p).await {
                         Ok((title, urls)) => {
-                            let s1 = self.clone();
                             let u1 = urls[0].to_string();
-                            tokio::task::spawn_local(async move {
-                                let _ = s1.dm.run_bilivideo(u1).await;
-                            });
+                            self.dm.set_bili_video_cid(&u1).await;
                             let s2 = self.clone();
                             tokio::task::spawn_local(async move {
                                 let _ = s2.mc.reload_edl_video(&urls, &title).await;
@@ -136,16 +149,8 @@ impl DMLive {
             }
         };
         self.cm.set_stream_type(&urls[0]).await;
-        let s1 = self.clone();
         let u1 = urls[0].to_string();
-        // danmaku task
-        tokio::task::spawn_local(async move {
-            if matches!(s1.cm.site, crate::config::Site::BiliVideo) {
-                let _ = s1.dm.run_bilivideo(u1).await;
-            } else {
-                let _ = s1.dm.run().await;
-            }
-        });
+        self.dm.set_bili_video_cid(&u1).await;
         let s2 = self.clone();
         let urls1 = urls.clone();
         // ffmpeg task

@@ -43,7 +43,7 @@ pub struct Danmaku {
     show_nick: Arc<RwLock<bool>>,
     font_size: Arc<RwLock<usize>>,
     channel_num: Arc<RwLock<usize>>,
-    res_tx: RwLock<Option<async_channel::Sender<(u64, u64)>>>,
+    bili_video_cid: RwLock<String>,
     fk: fudujikiller::FudujiKiller,
 }
 
@@ -55,8 +55,8 @@ impl Danmaku {
             show_nick: Arc::new(RwLock::new(false)),
             font_size: Arc::new(RwLock::new(40)),
             channel_num: Arc::new(RwLock::new(14)),
-            res_tx: RwLock::new(None),
             fk: fudujikiller::FudujiKiller::new(),
+            bili_video_cid: RwLock::new("".into()),
         }
     }
 
@@ -83,14 +83,10 @@ impl Danmaku {
         }
     }
 
-    pub async fn set_ratio_scale(&self, w: u64, h: u64) {
-        info!("set ratio scale: w-{} h-{}", w, h);
-        match self.res_tx.read().await.as_ref() {
-            Some(it) => {
-                let _ = it.send((w, h)).await;
-            }
-            None => {}
-        }
+    pub async fn set_bili_video_cid(self: &Arc<Self>, cid: &str) {
+        let mut bvc = self.bili_video_cid.write().await;
+        bvc.clear();
+        bvc.push_str(cid);
     }
 
     pub async fn toggle_show_nick(&self) {
@@ -187,7 +183,7 @@ impl Danmaku {
                 &n,
                 format!("{}{}{}", &c[4..6], &c[2..4], &c[0..2]),
                 *self.font_size.read().await,
-                if *self.show_nick.read().await { &n } else { "" },
+                if *self.show_nick.read().await { n } else { "" },
                 if *self.show_nick.read().await { ": " } else { "" },
             )
             .into_bytes();
@@ -247,17 +243,9 @@ impl Danmaku {
         // Ok(())
     }
 
-    pub async fn run_bilivideo(self: &Arc<Self>, cid: String) -> Result<()> {
-        let (tx, rx) = async_channel::unbounded();
-        *self.res_tx.write().await = Some(tx);
+    pub async fn run_bilivideo(self: &Arc<Self>, ratio_scale: f64) -> Result<()> {
         self.init().await;
         // *self.channel_num.write().await = 30;
-        let ratio_scale = if let Ok((w, h)) = rx.recv().await {
-            info!("video res fetched");
-            16.0 * h as f64 / w as f64 / 9.0
-        } else {
-            return Ok(());
-        };
         info!("ratio: {}", &ratio_scale);
         let mut socket = self.ipc_manager.get_danmaku_socket().await?;
         let mut dchannels = vec![
@@ -268,6 +256,7 @@ impl Danmaku {
             30
         ];
         let (dtx, drx) = async_channel::unbounded();
+        let cid = self.bili_video_cid.read().await.clone();
         let _ = spawn_local(async move {
             let b = bilivideo::Bilibili::new();
             match b
@@ -385,17 +374,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         Ok(())
     }
 
-    pub async fn run(self: &Arc<Self>) -> Result<()> {
-        let (tx, rx) = async_channel::unbounded();
-        *self.res_tx.write().await = Some(tx);
+    pub async fn run(self: &Arc<Self>, ratio_scale: f64) -> Result<()> {
         self.init().await;
         let mut socket = self.ipc_manager.get_danmaku_socket().await?;
-        let mut ratio_scale = 0.0;
-        while let Ok((w, h)) = rx.recv().await {
-            info!("video res fetched");
-            ratio_scale = 16.0 * h as f64 / w as f64 / 9.0;
-            break;
-        }
         let now = std::time::Instant::now();
         let mut read_order = 0usize;
         let emoji_re = regex::Regex::new(

@@ -24,6 +24,7 @@ fn main() {
         .arg(Arg::with_name("http-address").long("http-address").required(false).takes_value(true))
         .arg(Arg::with_name("record").short("r").long("record").required(false))
         .arg(Arg::with_name("quiet").short("q").long("quiet").required(false))
+        .arg(Arg::with_name("tcp").long("tcp").required(false))
         .arg(Arg::with_name("plive").long("plive").hidden(true))
         .arg(
             Arg::with_name("wait-interval")

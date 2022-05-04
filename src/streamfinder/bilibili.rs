@@ -50,11 +50,7 @@ impl Bilibili {
         param1.push(("format", "0,2"));
         param1.push(("codec", "0,1"));
 
-        let cookie = if self.cm.plive {
-            self.cm.bcookie.as_str()
-        } else {
-            ""
-        };
+        let cookie = if self.cm.plive { self.cm.bcookie.as_str() } else { "" };
         let resp = client
             .get(&self.api1)
             .header("Referer", room_url)
@@ -195,7 +191,18 @@ impl Bilibili {
             crate::config::config::BVideoType::Bangumi
         ) {
             let video_url = if page == 0 {
-                self.cm.bvideo_info.read().await.base_url.clone()
+                let page = self.cm.bvideo_info.read().await.current_page;
+                let u = self.cm.bvideo_info.read().await.base_url.clone();
+                let _ = self.get_page_info_ep(&u).await?;
+                let page = if page > self.cm.bvideo_info.read().await.plist.len() {
+                    self.cm.bvideo_info.read().await.plist.len()
+                } else {
+                    page
+                };
+                format!(
+                    "https://www.bilibili.com/bangumi/play/{}",
+                    self.cm.bvideo_info.read().await.plist[page - 1]
+                )
             } else {
                 let page = if page > self.cm.bvideo_info.read().await.plist.len() {
                     self.cm.bvideo_info.read().await.plist.len()

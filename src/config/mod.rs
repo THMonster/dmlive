@@ -37,6 +37,7 @@ pub enum Site {
 }
 
 pub struct ConfigManager {
+    pub plat: u8,
     pub bcookie: String,
     pub plive: bool,
     pub quiet: bool,
@@ -55,6 +56,10 @@ pub struct ConfigManager {
 
 impl ConfigManager {
     pub fn new(config_path: impl AsRef<Path>, ma: &ArgMatches) -> Self {
+        let mut plat = if cfg!(target_os = "linux") { 0 } else { 1 };
+        if ma.is_present("tcp") {
+            plat = 1;
+        }
         let mut bvinfo = BVideoInfo {
             base_url: "".into(),
             video_type: BVideoType::Video,
@@ -119,6 +124,7 @@ impl ConfigManager {
             quiet: ma.is_present("quiet"),
             wait_interval: ma.value_of("wait-interval").unwrap_or("0").parse().unwrap(),
             on_writing: AtomicBool::new(false),
+            plat,
         }
     }
 

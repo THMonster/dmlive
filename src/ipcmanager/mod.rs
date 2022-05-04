@@ -4,19 +4,31 @@ use anyhow::anyhow;
 use anyhow::Result;
 use async_channel::Receiver;
 use futures::{
-    future::{select_ok, AbortHandle, Abortable},
+    future::{
+        select_ok,
+        AbortHandle,
+        Abortable,
+    },
     Future,
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    net::{TcpListener, UnixListener},
+    io::{
+        AsyncRead,
+        AsyncWrite,
+    },
+    net::{
+        TcpListener,
+        UnixListener,
+    },
 };
 use uuid::Uuid;
 
 use crate::config::ConfigManager;
 
 pub trait DMLStream: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
-impl<T> DMLStream for T where T: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
+impl<T> DMLStream for T where T: AsyncRead + AsyncWrite + Send + Sync + Unpin
+{
+}
 
 pub struct IPCManager {
     pub is_dash: bool,
@@ -37,7 +49,7 @@ pub struct IPCManager {
 }
 
 impl IPCManager {
-    pub fn new(cm: Arc<ConfigManager>, plat: u8) -> Self {
+    pub fn new(cm: Arc<ConfigManager>) -> Self {
         let is_dash = if cm.room_url.contains("youtube.com") {
             true
         } else {
@@ -46,7 +58,7 @@ impl IPCManager {
         let base_uuid = Uuid::new_v4().to_hyphenated().to_string();
         IPCManager {
             is_dash,
-            plat,
+            plat: cm.plat,
             base_uuid,
             base_socket_dir: "/tmp".into(),
             f2m_port: 0,
@@ -98,7 +110,8 @@ impl IPCManager {
             while let std::result::Result::Ok((s, _)) = dml.accept().await {
                 tx.send(Box::new(s)).await?;
             }
-            anyhow::Ok::<()>(())
+            // anyhow::Ok::<()>(())
+            Ok::<(), _>(())
         };
         tasks.push(Box::pin(danmaku_socket_task));
         if self.is_dash {
@@ -140,6 +153,8 @@ impl IPCManager {
             };
             tasks.push(Box::pin(stream_socket_task));
         }
+        let (_, p) = Self::get_tcp_listener().await;
+        self.f2m_port = p;
 
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
         let tasks = Abortable::new(select_ok(tasks.into_iter()), abort_registration);
@@ -239,14 +254,14 @@ impl IPCManager {
     }
 
     pub fn get_f2m_socket_path(&self) -> String {
-        if self.plat == 0 {
-            format!(
-                "unix://{}/dml-{}-f2m",
-                &self.base_socket_dir, &self.base_uuid
-            )
-        } else {
-            format!("tcp://127.0.0.1:{}", &self.f2m_port)
-        }
+        // if self.plat == 0 {
+        //     format!(
+        //         "unix://{}/dml-{}-f2m",
+        //         &self.base_socket_dir, &self.base_uuid
+        //     )
+        // } else {
+        format!("tcp://127.0.0.1:{}", &self.f2m_port)
+        // }
     }
 
     pub fn get_stream_socket_path(&self) -> String {
