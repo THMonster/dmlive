@@ -20,6 +20,7 @@ use chrono::{
     NaiveTime,
 };
 use log::info;
+use log::warn;
 use std::rc::Rc;
 use std::{
     collections::BTreeMap,
@@ -235,12 +236,16 @@ impl Danmaku {
             } {
                 Ok(_) => {}
                 Err(e) => {
-                    println!("danmaku client error: {:?}", e);
+                    warn!("danmaku client error: {:?}", e);
                 }
             };
+            if dtx.is_closed() {
+                break;
+            }
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
-        // Ok(())
+        warn!("danmaku client exited.");
+        Ok(())
     }
 
     pub async fn run_bilivideo(self: &Arc<Self>, ratio_scale: f64) -> Result<()> {
@@ -375,9 +380,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     }
 
     pub async fn run(self: &Arc<Self>, ratio_scale: f64) -> Result<()> {
+        let now = std::time::Instant::now();
         self.init().await;
         let mut socket = self.ipc_manager.get_danmaku_socket().await?;
-        let now = std::time::Instant::now();
         let mut read_order = 0usize;
         let emoji_re = regex::Regex::new(
             r#"[\x{1F300}-\x{1F5FF}|\x{1F1E6}-\x{1F1FF}|\x{2700}-\x{27BF}|\x{1F900}-\x{1F9FF}|\x{1F600}-\x{1F64F}|\x{1F680}-\x{1F6FF}|\x{2600}-\x{26FF}]"#)

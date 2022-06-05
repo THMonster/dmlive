@@ -1,7 +1,11 @@
 use anyhow::anyhow;
 use anyhow::Result;
 use log::info;
+use log::warn;
 use std::sync::Arc;
+use tokio::fs::OpenOptions;
+use tokio::net::TcpStream;
+use tokio::task::spawn_local;
 use tokio::{
     io::{
         AsyncBufReadExt,
@@ -34,6 +38,43 @@ impl FfmpegControl {
             ff_command_tx: RwLock::new(None),
             mtx,
         }
+    }
+
+    async fn run_write_record_task(&self, title: String) -> tokio::task::JoinHandle<()> {
+        let tcp_addr = self.ipc_manager.get_f2m_socket_path()[6..].to_string();
+        spawn_local(async move {
+            loop {
+                let socket = match TcpStream::connect(&tcp_addr).await {
+                    Ok(it) => it,
+                    Err(_) => {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                        continue;
+                    }
+                };
+                let now = chrono::Local::now();
+                let mut file = match OpenOptions::new()
+                    .read(false)
+                    .write(true)
+                    .create(true)
+                    .open(format!(
+                        "{} - {}.mkv",
+                        title.replace("/", "-"),
+                        now.format("%F %T")
+                    ))
+                    .await
+                {
+                    Ok(it) => it,
+                    Err(e) => {
+                        warn!("open record file failed: {}", e);
+                        break;
+                    }
+                };
+
+                let mut socket = tokio::io::BufReader::with_capacity(3 * 1024, socket);
+                let _ = tokio::io::copy_buf(&mut socket, &mut file).await;
+                return;
+            }
+        })
     }
 
     pub async fn create_ff_command(&self, title: &str, rurl: &Vec<String>) -> Result<Command> {
@@ -78,6 +119,7 @@ impl FfmpegControl {
             ret.args(&["-c:a", "pcm_s16le"]);
         }
         ret.args(&["-metadata", format!("title={}", &title).as_str(), "-f", "matroska"]);
+        ret.args(&["-reserve_index_space", " 1024000"]);
         match self.cm.run_mode {
             crate::config::RunMode::Play => {
                 ret.arg("-listen").arg("1").arg(self.ipc_manager.get_f2m_socket_path());
@@ -88,12 +130,7 @@ impl FfmpegControl {
                         ret.arg("-listen").arg("1").arg(it);
                     }
                     None => {
-                        let now = chrono::Local::now();
-                        ret.arg(format!(
-                            "{} - {}.mkv",
-                            title.replace("/", "-"),
-                            now.format("%F %T")
-                        ));
+                        ret.arg("-listen").arg("1").arg(self.ipc_manager.get_f2m_socket_path());
                     }
                 };
             }
@@ -147,7 +184,23 @@ impl FfmpegControl {
             }
         });
 
+        let mut write_record_task: Option<tokio::task::JoinHandle<()>> = None;
+        match self.cm.run_mode {
+            crate::config::RunMode::Play => {}
+            crate::config::RunMode::Record => {
+                if self.cm.http_address.is_none() {
+                    write_record_task = Some(self.run_write_record_task(title.into()).await);
+                }
+            }
+        }
         ff.wait().await?;
+        match write_record_task {
+            Some(it) => {
+                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                it.abort()
+            }
+            None => {}
+        }
         Ok(())
     }
 }

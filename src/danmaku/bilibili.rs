@@ -9,6 +9,10 @@ use futures::{
     stream::StreamExt,
     SinkExt,
 };
+use log::{
+    info,
+    warn,
+};
 use reqwest::Url;
 use serde::Deserialize;
 use serde_json::json;
@@ -81,12 +85,19 @@ impl Bilibili {
         let mut ret = HashMap::new();
         if header.op == 5 {
             let j: serde_json::Value = serde_json::from_slice(&data)?;
+            // warn!("{:?}", &j);
             let msg_type = match j.pointer("/cmd").ok_or("dpm pje 1")?.as_str().ok_or("dpm pje 1-2")? {
                 "SEND_GIFT" => "gift",
-                "DANMU_MSG" => "danmaku",
+                "SUPER_CHAT_MESSAGE" => "superchat",
                 "WELCOME" => "enter",
                 "NOTICE_MSG" => "broadcast",
-                _ => "other",
+                it => {
+                    if it.starts_with("DANMU_MSG") {
+                        "danmaku"
+                    } else {
+                        "other"
+                    }
+                }
             };
             ret.insert("msg_type".to_owned(), msg_type.to_owned());
             if msg_type.eq("danmaku") {
@@ -105,6 +116,27 @@ impl Bilibili {
                         j.pointer("/info/0/3").ok_or("dpm pje 4")?.as_u64().unwrap_or(16777215)
                     ),
                 );
+            } else if msg_type.eq("superchat") {
+                ret.insert(
+                    "name".to_owned(),
+                    j.pointer("/data/user_info/uname").ok_or("dpm pje 5")?.as_str().ok_or("dpm pje 5-2")?.to_owned(),
+                );
+                ret.insert(
+                    "content".to_owned(),
+                    format!(
+                        "[SC]{}",
+                        j.pointer("/data/message").ok_or("dpm pje 6")?.as_str().ok_or("dpm pje 6-2")?
+                    ),
+                );
+                let mut c = j
+                    .pointer("/data/background_color_start")
+                    .ok_or("dpm pje 7")?
+                    .as_str()
+                    .ok_or("dpm pje 7-2")?
+                    .to_lowercase();
+                c.remove(0);
+                ret.insert("color".to_owned(), c);
+                *ret.get_mut("msg_type").unwrap() = "danmaku".into();
             }
         } else {
             ret.insert("msg_type".to_owned(), "other".to_owned());
@@ -154,7 +186,8 @@ impl Bilibili {
                 match ws_write.send(tokio_tungstenite::tungstenite::Message::Binary(hb1)).await {
                     Ok(_) => {}
                     _ => {
-                        println!("send heartbeat failed!")
+                        warn!("send heartbeat failed!");
+                        break;
                     }
                 };
             }
@@ -175,11 +208,11 @@ impl Bilibili {
                     }
                 }
                 Err(e) => {
-                    println!("read ws error: {:?}", e)
+                    warn!("read ws error: {:?}", e)
                 }
             }
         }
-        println!("ws closed!");
+        info!("ws closed!");
         Ok(())
     }
 }
