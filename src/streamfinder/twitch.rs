@@ -15,8 +15,13 @@ impl Twitch {
         }
     }
 
-    pub async fn get_live(&self, room_url: &str) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
-        let rid = Url::parse(room_url)?.path_segments().ok_or("rid parse error 1")?.last().ok_or("rid parse error 2")?.to_string();
+    pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<String, String>> {
+        let rid = Url::parse(room_url)?
+            .path_segments()
+            .ok_or(anyhow::anyhow!("rid parse error 1"))?
+            .last()
+            .ok_or(anyhow::anyhow!("rid parse error 2"))?
+            .to_string();
         let client = reqwest::Client::new();
         let mut ret = HashMap::new();
         let resp = client
@@ -31,10 +36,11 @@ impl Twitch {
         let re = Regex::new(r#""BroadcastSettings\}\|\{[^"]+":.+?"title":"(.+?)""#).unwrap();
         ret.insert(
             String::from("title"),
-            format!(
-                "{}",
-                re.captures(&resp).ok_or("regex err 1")?[1].to_string()
-            ),
+            re.captures(&resp)
+                    .ok_or(anyhow::anyhow!("regex err 1"))?
+                    .get(1)
+                    .ok_or(anyhow::anyhow!("regex err 1-1"))?
+                    .as_str().to_string(),
         );
         let mut param1 = Vec::new();
         let qu = format!(
@@ -52,8 +58,16 @@ impl Twitch {
             .json::<serde_json::Value>()
             .await?;
         // println!("{:?}", &resp);
-        let sign = resp.pointer("/data/streamPlaybackAccessToken/signature").ok_or("gl err 1")?.as_str().ok_or("gl err 1-2")?;
-        let token = resp.pointer("/data/streamPlaybackAccessToken/value").ok_or("gl err 2")?.as_str().ok_or("gl err 2-2")?;
+        let sign = resp
+            .pointer("/data/streamPlaybackAccessToken/signature")
+            .ok_or(anyhow::anyhow!("gl err 1"))?
+            .as_str()
+            .ok_or(anyhow::anyhow!("gl err 1-2"))?;
+        let token = resp
+            .pointer("/data/streamPlaybackAccessToken/value")
+            .ok_or(anyhow::anyhow!("gl err 2"))?
+            .as_str()
+            .ok_or(anyhow::anyhow!("gl err 2-2"))?;
         param1.clear();
         param1.push(("allow_source", "true"));
         param1.push(("fast_bread", "true"));
@@ -75,10 +89,7 @@ impl Twitch {
         let re = Regex::new(r#"[\s\S]+?\n(http[^\n]+)"#).unwrap();
         ret.insert(
             String::from("url"),
-            format!(
-                "{}",
-                re.captures(&resp).ok_or("gl err 3")?[1].to_string()
-            ),
+            re.captures(&resp).ok_or(anyhow::anyhow!("gl err 3"))?.get(1).ok_or(anyhow::anyhow!("gl err 3-1"))?.as_str().to_string(),
         );
         Ok(ret)
     }

@@ -50,12 +50,8 @@ pub struct IPCManager {
 
 impl IPCManager {
     pub fn new(cm: Arc<ConfigManager>) -> Self {
-        let is_dash = if cm.room_url.contains("youtube.com") {
-            true
-        } else {
-            false
-        };
-        let base_uuid = Uuid::new_v4().to_hyphenated().to_string();
+        let is_dash = cm.room_url.contains("youtube.com");
+        let base_uuid = Uuid::new_v4().as_hyphenated().to_string();
         IPCManager {
             is_dash,
             plat: cm.plat,

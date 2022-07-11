@@ -32,23 +32,23 @@ impl Twitch {
         Ok(("wss://irc-ws.chat.twitch.tv".to_string(), reg_datas))
     }
 
-    fn decode_msg(&self, data: &mut Vec<u8>) -> Result<Vec<HashMap<String, String>>, Box<dyn std::error::Error>> {
+    fn decode_msg(&self, data: &mut [u8]) -> Result<Vec<HashMap<String, String>>, Box<dyn std::error::Error>> {
         let mut ret = Vec::new();
         let msg = String::from_utf8_lossy(data);
         for m in msg.split('\n') {
             let mut d = std::collections::HashMap::new();
             let re = Regex::new(r#"display-name=([^;]+);"#).unwrap();
-            let name = match re.captures(&m) {
+            let name = match re.captures(m) {
                 Some(it) => it[1].to_string(),
                 _ => continue,
             };
             let re = Regex::new(r#"PRIVMSG [^:]+:(.+)"#).unwrap();
-            let content = match re.captures(&m) {
+            let content = match re.captures(m) {
                 Some(it) => it[1].to_string(),
                 _ => continue,
             };
             let re = Regex::new(r#"color=#([a-zA-Z0-9]{6});"#).unwrap();
-            let color = match re.captures(&m) {
+            let color = match re.captures(m) {
                 Some(it) => it[1].to_string(),
                 None => "ffffff".to_owned(),
             };

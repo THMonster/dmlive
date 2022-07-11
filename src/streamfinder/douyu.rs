@@ -66,7 +66,8 @@ impl Douyu {
             r#"
             {0} = {{{1}: []}};
             if (!this.window) {{window = {{}};}}
-            if (!this.document) {{document = {{}};}}"#,
+            if (!this.document) {{document = {{}};}}
+            "#,
             &debug_messages, &decrypted_codes
         );
         let js_patch = format!(
@@ -87,9 +88,17 @@ impl Douyu {
                 `.replace(/subWorkflow/g, subWorkflow[1]) + subWorkflow[0];
                 {2} = {2}.replace(subWorkflow[0], subPatch);
             }}
-            eval({2});"#,
+            eval({2});
+            "#,
             &debug_messages, &decrypted_codes, &workflow
         );
+
+        let did = Uuid::new_v4()
+            .as_simple()
+            .encode_lower(&mut Uuid::encode_buffer())
+            .to_string();
+        let tsec = format!("{}", Local::now().timestamp());
+
         let js_debug = format!(
             r#"
             var {2} = ub98484234;
@@ -101,34 +110,26 @@ impl Douyu {
                     {0}.{1} = e.message;
                 }}
                 return {0}.{1};
-            }};"#,
-            &debug_messages, &resoult, &m_ub98484234
+            }};
+            let tmp = {2}("{3}", "{4}", {5});
+            console.log(tmp);"#,
+            &debug_messages, &resoult, &m_ub98484234, &rid, &did, &tsec
         );
         let js_enc = js_enc.replace(format!("eval({});", workflow).as_str(), &js_patch);
         let js_all = format!("{}{}{}{}", &get_js_md5(), &js_dom, &js_enc, &js_debug);
 
-        let did = Uuid::new_v4()
-            .to_simple()
-            .encode_lower(&mut Uuid::encode_buffer())
-            .to_string();
-        let tsec = format!("{}", Local::now().timestamp());
-        let mut args = Vec::new();
-        args.push((1, rid.clone()));
-        args.push((1, did.clone()));
-        args.push((0, tsec.clone()));
-
-        let rest1 = crate::utils::js_call(&js_all, "ub98484234", &args).await?;
+        let rest1 = crate::utils::js_call(&js_all).await?;
         let rest1 = rest1.get(0).ok_or("param error")?;
         let mut param1 = Vec::new();
         let re = Regex::new(r"v=(\d+)").unwrap();
         param1.push((
             "v",
-            re.captures(&rest1).ok_or("regex err 3")?[1].to_string(),
+            re.captures(rest1).ok_or("regex err 3")?[1].to_string(),
         ));
         let re = Regex::new(r"sign=(\w{32})").unwrap();
         param1.push((
             "sign",
-            re.captures(&rest1).ok_or("regex err 4")?[1].to_string(),
+            re.captures(rest1).ok_or("regex err 4")?[1].to_string(),
         ));
         param1.push(("did", did));
         param1.push(("tt", tsec));

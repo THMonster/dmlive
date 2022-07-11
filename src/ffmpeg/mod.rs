@@ -58,7 +58,7 @@ impl FfmpegControl {
                     .create(true)
                     .open(format!(
                         "{} - {}.mkv",
-                        title.replace("/", "-"),
+                        title.replace('/', "-"),
                         now.format("%F %T")
                     ))
                     .await
@@ -145,7 +145,7 @@ impl FfmpegControl {
 
     pub async fn run(self: &Arc<Self>, title: &str, rurl: &Vec<String>) -> Result<()> {
         let mut ff = self
-            .create_ff_command(&title, rurl)
+            .create_ff_command(title, rurl)
             .await?
             .stdin(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -157,7 +157,7 @@ impl FfmpegControl {
         let (tx, rx) = async_channel::unbounded();
         *self.ff_command_tx.write().await = Some(tx);
         tokio::task::spawn_local(async move {
-            while let Ok(_) = rx.recv().await {
+            while (rx.recv().await).is_ok() {
                 info!("close ffmpeg");
                 let _ = ffstdin.write_all("q\n".as_bytes()).await;
             }

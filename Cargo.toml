@@ -14,7 +14,7 @@ tokio-tungstenite = { version = "0.16", features = ["native-tls-vendored"] }
 reqwest = { version = "0.11", default-features = false, features = ["brotli", "deflate", "gzip", "json", "native-tls-vendored"] }
 log = "0.4"
 env_logger = "0.9"
-clap = "2"
+clap = { version = "3", features = ["derive"] }
 httparse = "1.7"
 serde_json = "1.0"
 serde = { version = "1", features = ["derive"] }
@@ -23,7 +23,7 @@ rand = "0.8"
 flate2  = { version = "1.0", features = [] }
 regex = "1.5"
 fancy-regex = "0.10"
-uuid = { version = "0.8", features = ["v4"] }
+uuid = { version = "1.1", features = ["v4"] }
 chrono = "0.4"
 url = "2.2"
 urlencoding = "2.1"
@@ -37,7 +37,13 @@ async-channel = "1.6"
 directories = "4.0"
 anyhow = "1"
 bytes = "1.1"
+# boa_engine = { features = ["console"], version = "0.15.0" }
 tars-stream = { path = "tars-stream"}
+
+ring = "*"
+cbc = "*"
+aes = "*"
+sqlx = { version = "0.6", features = ["runtime-tokio-rustls", "sqlite"] }
 
 [profile.release]
 panic = 'abort'

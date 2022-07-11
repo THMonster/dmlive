@@ -4,7 +4,7 @@ use std::{
     time::Instant,
 };
 
-use log::warn;
+
 use tokio::sync::RwLock;
 
 pub struct FudujiKiller {
@@ -42,7 +42,7 @@ impl FudujiKiller {
         }
         // warn!("dm_stats len: {}", dmst.len());
         if dmst.len() > 30 {
-            dmst.retain(|_, v| if (v.1 < 5) || (now > v.0 + 20_000) { false } else { true });
+            dmst.retain(|_, v| !((v.1 < 5) || (now > v.0 + 20_000)));
         }
         ret
     }

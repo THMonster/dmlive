@@ -53,7 +53,7 @@ impl DMLive {
         let fc = Arc::new(FfmpegControl::new(cm.clone(), im.clone(), mtx.clone()));
         let sf = Arc::new(StreamFinder::new(cm.clone(), im.clone(), mtx.clone()));
         let st = Arc::new(Streamer::new(cm.clone(), im.clone(), mtx.clone()));
-        let dm = Arc::new(Danmaku::new(cm.clone(), im.clone(), mtx.clone()));
+        let dm = Arc::new(Danmaku::new(cm.clone(), im.clone(), mtx));
         DMLive {
             ipc_manager: im,
             cm,
@@ -74,7 +74,7 @@ impl DMLive {
         });
         let s2 = self.clone();
         tokio::task::spawn_local(async move {
-            let _ = s2.restart().await;
+            s2.restart().await;
         });
         let s3 = self.clone();
         tokio::task::spawn_local(async move {
@@ -166,7 +166,7 @@ impl DMLive {
                     // bilibili video download completed, then quit
                     let _ = s2.mc.quit().await;
                 } else {
-                    let _ = s2.restart().await;
+                    s2.restart().await;
                 }
             }
         });

@@ -50,7 +50,7 @@ impl FLV {
         let watchdog_task = async move {
             let mut cnt = 0u8;
             loop {
-                if feed_dog.load(std::sync::atomic::Ordering::SeqCst) == false {
+                if !feed_dog.load(std::sync::atomic::Ordering::SeqCst) {
                     cnt += 1;
                 } else {
                     cnt = 0;

@@ -125,7 +125,7 @@ impl DMKVCluster {
         socket.write_u8(self.block_id).await?;
         socket.write_u32(self.block_size).await?;
         socket.write_u32(self.block_content_header).await?;
-        socket.write(&self.block_content).await?;
+        socket.write_all(&self.block_content).await?;
         socket.write_u8(self.block_duration_id).await?;
         socket.write_u8(self.block_duration_size).await?;
         socket.write_u32(self.block_duration_content).await?;

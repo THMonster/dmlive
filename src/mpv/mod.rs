@@ -123,7 +123,7 @@ impl MpvControl {
     }
 
     async fn handle_mpv_event(self: &Arc<Self>, line: &str, last_time: &mut i64) -> Result<()> {
-        let j: serde_json::Value = serde_json::from_str(&line)?;
+        let j: serde_json::Value = serde_json::from_str(line)?;
         if j.pointer("/data/w").is_some() {
             let w = j.pointer("/data/w").ok_or(anyhow!("hme err 5"))?.as_u64().ok_or(anyhow!("hme err 6"))?;
             let h = j.pointer("/data/h").ok_or(anyhow!("hme err 7"))?.as_u64().ok_or(anyhow!("hme err 8"))?;

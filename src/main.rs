@@ -10,33 +10,51 @@ mod utils;
 
 use std::sync::Arc;
 
-use clap::Arg;
+use clap::Parser;
 use log::*;
 use tokio::{
     runtime::Builder,
     task,
 };
 
+#[derive(Parser)]
+#[clap(author, version, about, long_about = None)]
+pub struct Args {
+    /// Set the http url
+    #[clap(short = 'u', long, value_parser, value_name = "URL")]
+    url: String,
+
+    #[clap(short = 'r', long, action)]
+    record: bool,
+
+    #[clap(short = 'w', long = "wait-interval", value_parser)]
+    wait_interval: Option<u64>,
+
+    #[clap(long = "log-level", default_value_t = 3, value_parser)]
+    log_level: u8,
+
+    /// Serve as a http server
+    #[clap(long = "http-address", value_parser)]
+    http_address: Option<String>,
+
+    /// Do not print danmaku
+    #[clap(short = 'q', long, action)]
+    quiet: bool,
+
+    #[clap(long, action)]
+    tcp: bool,
+
+    #[clap(long, action)]
+    plive: bool,
+
+    // /// Use the Cookies that extracted from browser, could be "chrome" "chromium" or "firefox"
+    // #[clap(long = "cookies-from-browser", value_parser)]
+    // cookies_from_browser: Option<String>,
+}
+
 fn main() {
-    let ma = clap::App::new("dmlive")
-        .arg(Arg::with_name("url").short("u").long("url").value_name("STRING").required(true).takes_value(true))
-        .arg(Arg::with_name("log-level").long("log-level").required(false).takes_value(true))
-        .arg(Arg::with_name("http-address").long("http-address").required(false).takes_value(true))
-        .arg(Arg::with_name("record").short("r").long("record").required(false))
-        .arg(Arg::with_name("quiet").short("q").long("quiet").required(false))
-        .arg(Arg::with_name("tcp").long("tcp").required(false))
-        .arg(Arg::with_name("plive").long("plive").hidden(true))
-        .arg(
-            Arg::with_name("wait-interval")
-                .short("w")
-                .long("wait-interval")
-                .value_name("SECOND")
-                .required(false)
-                .takes_value(true),
-        )
-        .version(clap::crate_version!())
-        .get_matches();
-    let log_level = match ma.value_of("log-level").unwrap_or("3").parse().unwrap_or(3) {
+    let args = Args::parse();
+    let log_level = match args.log_level {
         1 => LevelFilter::Debug,
         2 => LevelFilter::Info,
         3 => LevelFilter::Warn,
@@ -56,7 +74,7 @@ fn main() {
                 if !config_path.exists() {
                     let _ = tokio::fs::File::create(&config_path).await;
                 }
-                let cm = Arc::new(crate::config::ConfigManager::new(config_path, &ma));
+                let cm = Arc::new(crate::config::ConfigManager::new(config_path, &args));
                 let dml = dmlive::DMLive::new(cm).await;
                 let dml = Arc::new(dml);
                 dml.run().await;

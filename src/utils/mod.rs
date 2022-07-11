@@ -1,3 +1,5 @@
+pub mod cookies;
+
 use log::info;
 use tokio::{
     io::{
@@ -24,28 +26,15 @@ pub fn gen_ua() -> String {
     //     .into()
 }
 
-pub async fn js_call(js: &str, func: &str, args: &Vec<(u8, String)>) -> anyhow::Result<Vec<String>> {
-    let mut tmp = format!("console.log({}(", &func);
-    for a in args {
-        // 0 for non-quotation marks, 1 for quotation marks
-        if a.0 == 0 {
-            tmp.push_str(&a.1);
-            tmp.push_str(",");
-        } else {
-            tmp.push_str("\"");
-            tmp.push_str(&a.1);
-            tmp.push_str("\"");
-            tmp.push_str(",");
-        }
-    }
-    tmp.push_str("));");
-    let tmp = format!("{};{}", &js, &tmp);
+// pub async fn js_call(js: &str, func: &str, args: &Vec<(u8, String)>) -> anyhow::Result<Vec<String>> {
+pub async fn js_call(js: &str) -> anyhow::Result<Vec<String>> {
     let mut rt =
         Command::new("node").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn()?;
     let mut rtin = rt.stdin.take().unwrap();
     let rtout = rt.stdout.take().unwrap();
+    let js = js.to_string();
     tokio::task::spawn_local(async move {
-        let _ = rtin.write_all(tmp.as_bytes()).await.unwrap();
+        rtin.write_all(js.as_bytes()).await.unwrap();
         rtin.shutdown().await.unwrap();
     });
     // let rtout = rt.wait_with_output().await.unwrap();
@@ -58,6 +47,24 @@ pub async fn js_call(js: &str, func: &str, args: &Vec<(u8, String)>) -> anyhow::
     info!("{:?}", &ret);
     Ok(ret)
 }
+
+// pub async fn js_call_boa(js: &str) -> anyhow::Result<Vec<String>> {
+//     warn!("{}", &js);
+//     let mut f = tokio::fs::OpenOptions::new().write(true).truncate(true).open("/tmp/ttt.js").await?;
+//     f.write_all(js.as_bytes()).await?;
+//     f.sync_all().await?;
+//     let mut context = boa_engine::Context::default();
+//     let ret = match context.eval(js) {
+//         Ok(res) => res.to_string(&mut context).unwrap(),
+//         Err(e) => {
+//             warn!("js error: {}", e.display());
+//             "".into()
+//         }
+//     };
+//     warn!("{:?}", &ret);
+//     todo!()
+//     // Ok(Vec::new())
+// }
 
 pub fn vn(mut val: u64) -> Vec<u8> {
     let mut buf = b"".to_vec();

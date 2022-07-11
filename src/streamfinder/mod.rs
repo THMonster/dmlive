@@ -12,6 +12,7 @@ use anyhow::anyhow;
 use anyhow::Result;
 use log::info;
 use log::warn;
+use std::borrow::Cow;
 use std::sync::Arc;
 
 pub struct StreamFinder {
@@ -34,7 +35,7 @@ impl StreamFinder {
     }
     pub async fn run_bilivideo(self: &Arc<Self>, page: usize) -> Result<(String, Vec<String>)> {
         let b = bilibili::Bilibili::new(self.cm.clone());
-        match b.get_video(self.cm.bcookie.as_str(), page).await {
+        match b.get_video(page).await {
             Ok(mut u) => Ok((u.remove(0), u)),
             Err(e) => Err(e),
         }
@@ -57,7 +58,7 @@ impl StreamFinder {
                     }
                     crate::config::Site::BiliVideo => {
                         let b = bilibili::Bilibili::new(self.cm.clone());
-                        match b.get_video(self.cm.bcookie.as_str(), 0).await {
+                        match b.get_video(0).await {
                             Ok(mut u) => {
                                 return Ok((u.remove(0), u));
                             }
@@ -103,7 +104,7 @@ impl StreamFinder {
                         let b = youtube::Youtube::new();
                         match b.get_live(&self.cm.room_url).await {
                             Ok(u) => {
-                                let a: Vec<String> = u["url"].split("\n").map(|x| x.to_string()).collect();
+                                let a: Vec<String> = u["url"].split('\n').map(|x| x.to_string()).collect();
                                 return Ok((u["title"].to_string(), a));
                             }
                             Err(e) => {

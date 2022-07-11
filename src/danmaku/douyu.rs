@@ -66,7 +66,7 @@ impl Douyu {
                 break;
             }
             let msg = String::from_utf8_lossy(&data[12..h.0 as usize + 2]);
-            let msg = msg.replace("@=", r#"":""#).replace("/", r#"",""#);
+            let msg = msg.replace("@=", r#"":""#).replace('/', r#"",""#);
             let msg = msg.replace("@A", "@").replace("@S", "/");
             let msg = format!(r#"{{"{}"}}"#, &msg);
             // println!("{}", &msg);
@@ -102,7 +102,7 @@ impl Douyu {
                     }
                     _ => "ffffff".to_string(),
                 };
-                d.insert("color".to_owned(), format!("{}", col));
+                d.insert("color".to_owned(), col.to_string());
             }
             ret.push(d);
             data.drain(0..h.0 as usize + 4);

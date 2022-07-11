@@ -35,20 +35,18 @@ impl HLS {
         m3u8: &str,
         old_urls: &mut HashSet<String>,
     ) -> Result<LinkedList<String>, Box<dyn std::error::Error>> {
-        let lines: Vec<_> = m3u8.split("\n").collect();
+        let lines: Vec<_> = m3u8.split('\n').collect();
         let mut sq = None;
         let mut urls = LinkedList::new();
         let mut i = 0;
         while i < lines.len() {
             if lines[i].starts_with("#EXT-X-MEDIA-SEQUENCE") {
                 let re = regex::Regex::new(r#"#EXT-X-MEDIA-SEQUENCE: *([0-9]+)"#).unwrap();
-                let t: u64 = re.captures(&lines[i]).ok_or("decode m3u8 err 1")?[1].parse()?;
+                let t: u64 = re.captures(lines[i]).ok_or("decode m3u8 err 1")?[1].parse()?;
                 sq = Some(t);
             }
-            if !lines[i].starts_with("#") {
-                if !lines[i].trim().is_empty() {
-                    urls.push_back(lines[i]);
-                }
+            if !lines[i].starts_with('#') && !lines[i].trim().is_empty() {
+                urls.push_back(lines[i]);
             }
             i += 1;
         }

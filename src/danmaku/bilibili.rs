@@ -48,8 +48,7 @@ impl Bilibili {
             Url::parse(url)?.path_segments().ok_or("rid parse error 1")?.last().ok_or("rid parse error 2")?.to_string();
         let mut reg_data: Vec<u8> = Vec::new();
         let client = reqwest::Client::new();
-        let mut param1 = Vec::new();
-        param1.push(("id", rid.as_str()));
+        let param1 = vec![("id", rid.as_str())];
         let resp = client
             .get(&self.api1)
             .header("User-Agent", crate::utils::gen_ua())
@@ -84,7 +83,7 @@ impl Bilibili {
     ) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
         let mut ret = HashMap::new();
         if header.op == 5 {
-            let j: serde_json::Value = serde_json::from_slice(&data)?;
+            let j: serde_json::Value = serde_json::from_slice(data)?;
             // warn!("{:?}", &j);
             let msg_type = match j.pointer("/cmd").ok_or("dpm pje 1")?.as_str().ok_or("dpm pje 1-2")? {
                 "SEND_GIFT" => "gift",

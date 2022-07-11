@@ -2,6 +2,7 @@ use crate::config::ConfigManager;
 use anyhow::anyhow;
 use anyhow::Result;
 use regex::Regex;
+use std::borrow::Cow;
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -184,7 +185,12 @@ impl Bilibili {
         Ok((bvid, cid, title, artist))
     }
 
-    pub async fn get_video(&self, cookie: &str, page: usize) -> Result<Vec<String>> {
+    pub async fn get_video(&self, page: usize) -> Result<Vec<String>> {
+        let cookies = if self.cm.cookies_from_browser.is_empty() {
+            self.cm.bcookie.clone()
+        } else {
+            crate::utils::cookies::get_cookies_from_browser(&self.cm.cookies_from_browser, "bilibili.com").await?
+        };
         let mut ret: Vec<String> = Vec::new();
         if matches!(
             self.cm.bvideo_info.read().await.video_type,
@@ -232,7 +238,7 @@ impl Bilibili {
             let resp = client
                 .get(&self.apiv_ep)
                 .header("Referer", video_url)
-                .header("Cookie", cookie)
+                .header("Cookie", cookies)
                 .query(&param1)
                 .send()
                 .await?
@@ -366,7 +372,7 @@ impl Bilibili {
             let resp = client
                 .get(&self.apiv)
                 .header("Referer", video_url)
-                .header("Cookie", cookie)
+                .header("Cookie", cookies)
                 .query(&param1)
                 .send()
                 .await?

@@ -1,6 +1,5 @@
 pub mod config;
 
-use clap::ArgMatches;
 use reqwest::Url;
 use std::{
     path::Path,
@@ -11,6 +10,8 @@ use tokio::{
     fs::OpenOptions,
     io::AsyncWriteExt,
 };
+
+use crate::Args;
 
 use self::config::{
     BVideoInfo,
@@ -39,6 +40,7 @@ pub enum Site {
 pub struct ConfigManager {
     pub plat: u8,
     pub bcookie: String,
+    pub cookies_from_browser: String,
     pub plive: bool,
     pub quiet: bool,
     pub wait_interval: u64,
@@ -55,9 +57,9 @@ pub struct ConfigManager {
 }
 
 impl ConfigManager {
-    pub fn new(config_path: impl AsRef<Path>, ma: &ArgMatches) -> Self {
+    pub fn new(config_path: impl AsRef<Path>, args: &Args) -> Self {
         let mut plat = if cfg!(target_os = "linux") { 0 } else { 1 };
-        if ma.is_present("tcp") {
+        if args.tcp {
             plat = 1;
         }
         let mut bvinfo = BVideoInfo {
@@ -69,14 +71,13 @@ impl ConfigManager {
         let c = std::fs::read(config_path).unwrap();
         let c = String::from_utf8_lossy(&c);
         let c = config::load_config(&c).unwrap();
-        let room_url = ma.value_of("url").unwrap();
+        let room_url = args.url.clone();
         let site = if room_url.contains("live.bilibili.com/") {
             Site::BiliLive
         } else if room_url.contains("bilibili.com/") {
             let u = Url::parse(&room_url).unwrap();
             for q in u.query_pairs() {
-                if q.0.eq("p") {
-                    bvinfo.current_page = q.1.parse().unwrap();
+                if q.0.eq("p") { bvinfo.current_page = q.1.parse().unwrap();
                 }
             }
             let vid = u.path_segments().unwrap().filter(|x| !x.is_empty()).last().unwrap().to_string();
@@ -99,9 +100,9 @@ impl ConfigManager {
         } else {
             panic!("unknown url")
         };
-        let run_mode = if ma.is_present("record") {
+        let run_mode = if args.record {
             RunMode::Record
-        } else if ma.value_of("http-address").is_some() {
+        } else if args.http_address.is_some() {
             RunMode::Record
         } else {
             RunMode::Play
@@ -115,16 +116,14 @@ impl ConfigManager {
             font_alpha: RwLock::new(c.font_alpha.unwrap_or(0.0)),
             danmaku_speed: RwLock::new(c.danmaku_speed.unwrap_or(8000)),
             bvideo_info: RwLock::new(bvinfo),
-            bcookie: c.bcookie.unwrap_or("".into()),
-            http_address: match ma.value_of("http-address") {
-                Some(it) => Some(it.into()),
-                None => None,
-            },
-            plive: ma.is_present("plive"),
-            quiet: ma.is_present("quiet"),
-            wait_interval: ma.value_of("wait-interval").unwrap_or("0").parse().unwrap(),
+            bcookie: c.bcookie.unwrap_or_else(|| "".into()),
+            http_address: args.http_address.as_ref().map(|it| it.into()),
+            plive: args.plive,
+            quiet: args.quiet,
+            wait_interval: args.wait_interval.unwrap_or(0),
             on_writing: AtomicBool::new(false),
             plat,
+            cookies_from_browser: c.cookies_from_browser.unwrap_or_else(|| "".into()),
         }
     }
 
@@ -142,7 +141,7 @@ impl ConfigManager {
     }
 
     pub async fn write_config(&self) -> anyhow::Result<()> {
-        if self.on_writing.load(std::sync::atomic::Ordering::SeqCst) == false {
+        if !self.on_writing.load(std::sync::atomic::Ordering::SeqCst) {
             self.on_writing.store(true, std::sync::atomic::Ordering::SeqCst);
             tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
             let proj_dirs = directories::ProjectDirs::from("com", "THMonster", "dmlive").unwrap();
@@ -157,6 +156,7 @@ impl ConfigManager {
                 f.write_all(
                     toml::to_string_pretty(&Config {
                         bcookie: Some(self.bcookie.clone()),
+                        cookies_from_browser: Some(self.cookies_from_browser.clone()),
                         danmaku_speed: Some(*self.danmaku_speed.read().await),
                         font_alpha: Some(*self.font_alpha.read().await),
                         font_scale: Some(*self.font_scale.read().await),

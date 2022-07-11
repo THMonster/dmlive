@@ -60,7 +60,7 @@ impl Streamer {
                     self.mtx.clone(),
                 );
                 let s = Arc::new(s);
-                let _ = s.run().await;
+                s.run().await;
             }
         }
         Ok(())

@@ -70,7 +70,7 @@ impl Danmaku {
 
     pub async fn set_font_size(&self, font_scale: f64) {
         if font_scale > 0.0 {
-            *self.font_size.write().await = (40 as f64 * font_scale) as usize;
+            *self.font_size.write().await = (40_f64 * font_scale) as usize;
             *self.channel_num.write().await = (540.0 / *self.font_size.read().await as f64).ceil() as usize;
             *self.cm.font_scale.write().await = font_scale;
             let _ = self.cm.write_config().await;
@@ -78,7 +78,7 @@ impl Danmaku {
     }
 
     pub async fn set_font_alpha(&self, font_alpha: f64) {
-        if font_alpha >= 0.0 && font_alpha <= 1.0 {
+        if (0.0..=1.0).contains(&font_alpha) {
             *self.cm.font_alpha.write().await = font_alpha;
             let _ = self.cm.write_config().await;
         }
@@ -112,17 +112,15 @@ impl Danmaku {
             }
             if ((*self.cm.danmaku_speed.read().await as f64 - c_pts as f64 + c.begin_pts as f64) * s) > 1920.0 {
                 continue;
+            } else if ((c.length + 1920) as f64 * (c_pts as f64 - c.begin_pts as f64)
+                / *self.cm.danmaku_speed.read().await as f64)
+                < c.length as f64
+            {
+                continue;
             } else {
-                if ((c.length + 1920) as f64 * (c_pts as f64 - c.begin_pts as f64)
-                    / *self.cm.danmaku_speed.read().await as f64)
-                    < c.length as f64
-                {
-                    continue;
-                } else {
-                    c.length = len;
-                    c.begin_pts = c_pts;
-                    return Some(i);
-                }
+                c.length = len;
+                c.begin_pts = c_pts;
+                return Some(i);
             }
         }
         None
@@ -168,15 +166,12 @@ impl Danmaku {
             let ass = format!(r#"{},0,Default,dmlive-empty,20,20,2,,"#, *read_order,).into_bytes();
             mkv_header::DMKVCluster::new(ass, c_pts, 1)
         } else {
-            let display_length = self.get_danmaku_display_length(&n, &d, ratio_scale).await;
+            let display_length = self.get_danmaku_display_length(n, d, ratio_scale).await;
             let avail_dc =
                 self.get_avail_danmaku_channel(c_pts, display_length, channels).await.ok_or(anyhow!("ld err 1"))?;
             let ass = format!(
                 r#"{4},0,Default,{5},0,0,0,,{{\alpha{0}\fs{7}\1c&{6}&\move(1920,{1},{2},{1})}}{8}{9}{3}"#,
-                format!(
-                    "{:02x}",
-                    (*self.cm.font_alpha.read().await * 255 as f64) as u8
-                ),
+                format_args!("{:02x}", (*self.cm.font_alpha.read().await * 255_f64) as u8),
                 avail_dc * *self.font_size.read().await,
                 0 - display_length as isize,
                 &d,
@@ -199,7 +194,7 @@ impl Danmaku {
     }
 
     async fn init(&self) {
-        *self.font_size.write().await = (40 as f64 * *self.cm.font_scale.read().await) as usize;
+        *self.font_size.write().await = (40_f64 * *self.cm.font_scale.read().await) as usize;
         *self.channel_num.write().await = (540.0 / *self.font_size.read().await as f64).ceil() as usize;
     }
 
@@ -313,16 +308,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             t1_s.remove(t1_s.len() - 1);
             t2_s.remove(t2_s.len() - 1);
             if t.trim().eq("4") {
-                let _ = socket
+                socket
                     .write_all(
                         format!(
                             r#"Dialogue: 0,{4},{5},Default,,0,0,0,,{{\alpha{0}\fs{3}\1c&{2}&\an2}}{1}"#,
-                            format!(
-                                "{:02x}",
-                                (*self.cm.font_alpha.read().await * 255 as f64) as u8
-                            ),
+                            format_args!("{:02x}", (*self.cm.font_alpha.read().await * 255_f64) as u8),
                             &d,
-                            format!("{}{}{}", &c[4..6], &c[2..4], &c[0..2]),
+                            format_args!("{}{}{}", &c[4..6], &c[2..4], &c[0..2]),
                             *self.font_size.read().await,
                             t1_s,
                             t2_s,
@@ -330,16 +322,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         .as_bytes(),
                     )
                     .await?;
-                let _ = socket.write_all("\n".as_bytes()).await?;
+                socket.write_all("\n".as_bytes()).await?;
             } else if t.trim().eq("5") {
-                let _ = socket
+                socket
                     .write_all(
                         format!(
                             r#"Dialogue: 0,{4},{5},Default,,0,0,0,,{{\alpha{0}\fs{3}\1c&{2}&\an8}}{1}"#,
-                            format!(
-                                "{:02x}",
-                                (*self.cm.font_alpha.read().await * 255 as f64) as u8
-                            ),
+                            format_args!("{:02x}", (*self.cm.font_alpha.read().await * 255_f64) as u8),
                             &d,
                             format!("{}{}{}", &c[4..6], &c[2..4], &c[0..2]),
                             *self.font_size.read().await,
@@ -349,7 +338,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         .as_bytes(),
                     )
                     .await?;
-                let _ = socket.write_all("\n".as_bytes()).await?;
+                socket.write_all("\n".as_bytes()).await?;
             } else {
                 let display_length = self.get_danmaku_display_length("", &d, ratio_scale).await;
                 let avail_dc = match self.get_avail_danmaku_channel(k as usize, display_length, &mut dchannels).await {
@@ -360,10 +349,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 };
                 let ass = format!(
                     r#"Dialogue: 0,{4},{5},Default,,0,0,0,,{{\alpha{0}\fs{7}\1c&{6}&\move(1920,{1},{2},{1})}}{3}"#,
-                    format!(
-                        "{:02x}",
-                        (*self.cm.font_alpha.read().await * 255 as f64) as u8
-                    ),
+                    format_args!("{:02x}", (*self.cm.font_alpha.read().await * 255_f64) as u8),
                     avail_dc * *self.font_size.read().await,
                     0 - display_length as isize,
                     &d,
@@ -372,8 +358,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     format!("{}{}{}", &c[4..6], &c[2..4], &c[0..2]),
                     *self.font_size.read().await,
                 );
-                let _ = socket.write_all(ass.as_bytes()).await?;
-                let _ = socket.write_all("\n".as_bytes()).await?;
+                socket.write_all(ass.as_bytes()).await?;
+                socket.write_all("\n".as_bytes()).await?;
             }
         }
         Ok(())

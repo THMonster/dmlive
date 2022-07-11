@@ -25,7 +25,7 @@ fn get_param(vid: &str, cid: &str) -> String {
     let s1 = [crate::utils::rs(3, s1_3.as_ref()), crate::utils::rs(5, s1_5.as_ref())].concat();
     let s3 = crate::utils::rs(
         48687757,
-        crate::utils::rs(1, vid.as_bytes().as_ref()).as_ref(),
+        crate::utils::rs(1, vid.as_bytes()).as_ref(),
     );
     let header = [
         crate::utils::rs(1, s1.as_ref()),
@@ -230,7 +230,7 @@ impl Youtube {
             let interval: u64;
             match self.get_single_chat(&mut ctn, http_client.clone()).await {
                 Ok(mut dm) => {
-                    if dm.len() > 0 {
+                    if !dm.is_empty() {
                         interval = 2000 / dm.len() as u64;
                         for d in dm.drain(..) {
                             if d.get("msg_type").unwrap_or(&"other".into()).eq("danmaku") {

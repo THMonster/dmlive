@@ -29,7 +29,7 @@ impl Youtube {
             let c = || -> Result<serde_json::Value, Box<dyn std::error::Error>> {
                 let re = Regex::new(r"ytInitialPlayerResponse\s*=\s*(\{.+?\});.*?</script>").unwrap();
                 let j: serde_json::Value = serde_json::from_str(re.captures(&resp).ok_or("get_live err 4")?[1].to_string().as_ref())?;
-                if j.pointer("/videoDetails/isLive").ok_or("get_live err 7")?.as_bool().ok_or("get_live err 7-2")? == false {
+                if !(j.pointer("/videoDetails/isLive").ok_or("get_live err 7")?.as_bool().ok_or("get_live err 7-2")?) {
                     return Err(Box::new(std::io::Error::new(
                         std::io::ErrorKind::Other,
                         "no stream",
@@ -103,7 +103,7 @@ impl Youtube {
                 if e.tag_name().name().eq("SegmentList") {
                     for seg in e.descendants() {
                         if seg.tag_name().name().eq("SegmentURL") {
-                            let spl: Vec<_> = seg.attribute("media").unwrap_or("").split("/").collect();
+                            let spl: Vec<_> = seg.attribute("media").unwrap_or("").split('/').collect();
                             sq = spl[1].parse()?;
                         }
                     }
