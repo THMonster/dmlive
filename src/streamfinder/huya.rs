@@ -14,10 +14,9 @@ impl Huya {
         let mut ret = HashMap::new();
         let resp =
             client.get(room_url).header("User-Agent", crate::utils::gen_ua()).header("Referer", "https://www.huya.com/").send().await?.text().await?;
-        let re = Regex::new(r#""stream": "([a-zA-Z0-9+=/]+)""#).unwrap();
+        let re = Regex::new(r#"(?m)(?s)hyPlayerConfig.*?stream:(.*?)\s*};"#).unwrap();
         let json_stream = re.captures(&resp).ok_or("regex err 1")?[1].to_string();
-        let j = base64::decode(json_stream)?;
-        let j: serde_json::Value = serde_json::from_str(str::from_utf8(&j)?)?;
+        let j: serde_json::Value = serde_json::from_str(json_stream.as_str())?;
         // println!("{:?}", &j);
         ret.insert(
             String::from("title"),
