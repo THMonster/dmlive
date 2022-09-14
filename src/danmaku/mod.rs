@@ -261,7 +261,8 @@ impl Danmaku {
             let b = bilivideo::Bilibili::new();
             match b
                 .run(
-                    format!("https://comment.bilibili.com/{}.xml", cid).as_str(),
+                    // format!("https://comment.bilibili.com/{}.xml", cid).as_str(),
+                    format!("http://api.bilibili.com/x/v1/dm/list.so?oid={}", cid).as_str(),
                     dtx.clone(),
                 )
                 .await
