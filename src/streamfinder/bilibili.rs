@@ -1,6 +1,7 @@
 use crate::config::ConfigManager;
 use anyhow::anyhow;
 use anyhow::Result;
+use log::warn;
 use regex::Regex;
 use std::borrow::Cow;
 use std::{
@@ -45,7 +46,7 @@ impl Bilibili {
         param1.push(("room_id", rid.as_str()));
         param1.push(("no_playurl", "0"));
         param1.push(("mask", "1"));
-        param1.push(("qn", "10000"));
+        param1.push(("qn", "20000"));
         param1.push(("platform", "web"));
         param1.push(("protocol", "0,1"));
         param1.push(("format", "0,2"));
@@ -61,6 +62,7 @@ impl Bilibili {
             .await?
             .json::<serde_json::Value>()
             .await?;
+        // warn!("{:?}", &resp);
         let j =
             resp.pointer("/data/playurl_info/playurl/stream/0/format/0/codec/0").ok_or(anyhow!("cannot parse json"))?;
         ret.insert(
