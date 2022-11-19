@@ -54,7 +54,10 @@ async fn get_kwallet_password(browser: &str) -> anyhow::Result<[u8; 16]> {
         ])
         .output()
         .await?;
-    let password = String::from_utf8_lossy(&kwallet_cmd.stdout).trim().to_string();
+    let mut password = String::from_utf8_lossy(&kwallet_cmd.stdout).trim().to_string();
+    if password.starts_with("Failed") {
+        password.clear();
+    }
     info!("found password: {}", &password);
     let mut pw_key = [0u8; 16];
     ring::pbkdf2::derive(

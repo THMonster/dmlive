@@ -50,6 +50,8 @@ impl MpvControl {
             ret.args(&["--cache=yes", "--cache-pause-initial=yes"]);
         }
         ret.args(&[
+            "--loop=no",
+            "--keep-open=no",
             "--idle=yes",
             "--player-operation-mode=pseudo-gui",
             r#"--vf=lavfi="fps=60""#,
