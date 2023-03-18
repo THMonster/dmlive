@@ -1,9 +1,19 @@
+use base64::{
+    engine::general_purpose,
+    Engine,
+};
 use chrono::prelude::*;
 use log::*;
 use regex::Regex;
 use reqwest::Client;
-use serde_json::{json, Value};
-use std::{collections::HashMap, sync::Arc};
+use serde_json::{
+    json,
+    Value,
+};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+};
 use tokio::time::sleep;
 
 fn get_param(vid: &str, cid: &str) -> String {
@@ -23,10 +33,7 @@ fn get_param(vid: &str, cid: &str) -> String {
     let s1_3: Vec<u8> = crate::utils::rs(1, vid.as_bytes());
     let s1_5 = [crate::utils::rs(1, cid.as_bytes()), crate::utils::rs(2, vid.as_bytes())].concat();
     let s1 = [crate::utils::rs(3, s1_3.as_ref()), crate::utils::rs(5, s1_5.as_ref())].concat();
-    let s3 = crate::utils::rs(
-        48687757,
-        crate::utils::rs(1, vid.as_bytes()).as_ref(),
-    );
+    let s3 = crate::utils::rs(48687757, crate::utils::rs(1, vid.as_bytes()).as_ref());
     let header = [
         crate::utils::rs(1, s1.as_ref()),
         crate::utils::rs(3, s3.as_ref()),
@@ -34,7 +41,7 @@ fn get_param(vid: &str, cid: &str) -> String {
     ]
     .concat();
 
-    let header = crate::utils::rs(3, base64::encode(header).as_bytes());
+    let header = crate::utils::rs(3, general_purpose::STANDARD.encode(header).as_bytes());
     let timestamp1 = crate::utils::nm(5, ts);
     let s6 = crate::utils::nm(6, 0);
     let s7 = crate::utils::nm(7, 0);
@@ -63,7 +70,7 @@ fn get_param(vid: &str, cid: &str) -> String {
     ]
     .concat();
     let continuation = crate::utils::rs(119693434, entity.as_ref());
-    url::form_urlencoded::byte_serialize(base64::encode_config(continuation, base64::URL_SAFE).as_bytes()).collect()
+    url::form_urlencoded::byte_serialize(general_purpose::URL_SAFE.encode(continuation).as_bytes()).collect()
 }
 
 pub struct Youtube {
@@ -75,7 +82,7 @@ impl Youtube {
     pub fn new() -> Self {
         Youtube {
             key: String::from_utf8_lossy(
-                base64::decode(b"eW91dHViZWkvdjEvbGl2ZV9jaGF0L2dldF9saXZlX2NoYXQ/a2V5PUFJemFTeUFPX0ZKMlNscVU4UTRTVEVITEdDaWx3X1k5XzExcWNXOA==")
+                general_purpose::STANDARD.decode(b"eW91dHViZWkvdjEvbGl2ZV9jaGF0L2dldF9saXZlX2NoYXQ/a2V5PUFJemFTeUFPX0ZKMlNscVU4UTRTVEVITEdDaWx3X1k5XzExcWNXOA==")
                     .unwrap()
                     .as_ref(),
             )

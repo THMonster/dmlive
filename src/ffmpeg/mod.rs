@@ -166,7 +166,7 @@ impl FfmpegControl {
         tokio::task::spawn_local(async move {
             let mut reader = tokio::io::BufReader::new(ffstderr).lines();
             let res_re = regex::Regex::new(r#"Stream #[0-9].+? Video:.*?\D(\d{3,5})x(\d{2,5})\D.*"#).unwrap();
-            while let Some(line) = reader.next_line().await.unwrap() {
+            while let Some(line) = reader.next_line().await.unwrap_or(Some("err".to_string())) {
                 info!("{}", &line);
                 match res_re.captures(&line) {
                     Some(it) => {

@@ -302,7 +302,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         }
         for (k, (c, t, d)) in dm_hashmap.into_iter() {
             info!("{}-{}-{}-{}", &k, &c, &t, &d);
-            let t1 = NaiveTime::from_hms(0, 0, 0) + Duration::milliseconds(k);
+            let t1 = NaiveTime::from_hms_opt(0, 0, 0).unwrap() + Duration::milliseconds(k);
             let t2 = t1 + Duration::milliseconds(*self.cm.danmaku_speed.read().await as i64);
             let mut t1_s = t1.format("%k:%M:%S%.3f").to_string();
             let mut t2_s = t2.format("%k:%M:%S%.3f").to_string();

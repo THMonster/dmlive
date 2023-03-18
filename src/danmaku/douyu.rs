@@ -1,7 +1,14 @@
+use crate::utils::gen_ua;
 use bincode::Options;
-use futures::{stream::StreamExt, SinkExt};
+use futures::{
+    stream::StreamExt,
+    SinkExt,
+};
 use reqwest::Url;
-use std::{collections::HashMap, usize};
+use std::{
+    collections::HashMap,
+    usize,
+};
 use tokio::time::sleep;
 
 pub struct Douyu {
@@ -115,13 +122,19 @@ impl Douyu {
         dtx: async_channel::Sender<(String, String, String)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let (ws, reg_data) = self.get_ws_info(url).await?;
-        let http_buf = format!("GET {} HTTP/1.1", &ws).as_bytes().to_vec();
-        let mut headers = [httparse::Header {
-            name: "Sec-WebSocket-Protocol",
-            value: b"soap",
-        }];
-        let mut req = httparse::Request::new(&mut headers);
-        req.parse(&http_buf)?;
+        let req = tokio_tungstenite::tungstenite::http::Request::builder()
+            .method("GET")
+            .header("Host", "danmuproxy.douyu.com")
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket")
+            .header("Sec-WebSocket-Version", "13")
+            .header(
+                "Sec-WebSocket-Key",
+                tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+            )
+            .header("User-Agent", gen_ua())
+            .uri(&ws)
+            .body(())?;
         let (ws_stream, _) = tokio_tungstenite::connect_async(req).await?;
         let (mut ws_write, mut ws_read) = ws_stream.split();
         ws_write
