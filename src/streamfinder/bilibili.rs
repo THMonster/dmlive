@@ -1,9 +1,7 @@
 use crate::config::ConfigManager;
 use anyhow::anyhow;
 use anyhow::Result;
-use log::warn;
 use regex::Regex;
-use std::borrow::Cow;
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -102,57 +100,67 @@ impl Bilibili {
         );
         Ok(ret)
     }
-    pub async fn get_page_info_ep(&self, video_url: &str) -> Result<(String, String, String, String, String)> {
+    pub async fn get_page_info_ep(
+        &self,
+        video_url: &str,
+        mut page: usize,
+    ) -> Result<(String, String, String, String, String)> {
         let client = reqwest::Client::builder()
             .user_agent(crate::utils::gen_ua())
             .connect_timeout(tokio::time::Duration::from_secs(10))
             .build()?;
         let resp = client.get(video_url).header("Referer", video_url).send().await?.text().await?;
-        let re = Regex::new(r"__INITIAL_STATE__=(\{.+?\});").unwrap();
-        let j: serde_json::Value =
-            serde_json::from_str(re.captures(&resp).ok_or(anyhow!("gpie regex err 1"))?[1].to_string().as_ref())?;
+        let re = Regex::new(r"_NEXT_DATA_.+>\s*(\{.+\})\s*<").unwrap();
+        let j: serde_json::Value = serde_json::from_str(re.captures(&resp).ok_or(anyhow!("gpie err a1"))?[1].as_ref())?;
         // println!("{:?}", &j);
-        let title = match j.pointer("/h1Title") {
-            Some(it) => it.as_str().ok_or(anyhow!("cannot convert to string"))?.to_string(),
-            _ => {
-                let re = Regex::new(r"<title>(.+?)_番剧_bilibili_哔哩哔哩<").unwrap();
-                re.captures(&resp).ok_or(anyhow!("gpie regex err 2"))?[1].to_string()
+        let j = j
+            .pointer("/props/pageProps/dehydratedState/queries/0/state/data/mediaInfo")
+            .ok_or(anyhow!("gpie err a2"))?;
+        let season_type = j.pointer("/season_type").ok_or(anyhow!("gpie err b1"))?.as_i64().unwrap().to_string();
+        let eplist = j.pointer("/episodes").ok_or(anyhow!("gpie err b2"))?.as_array().unwrap();
+        let epid = url::Url::parse(video_url)?
+            .path_segments()
+            .ok_or(anyhow!("gpie err b3"))?
+            .last()
+            .ok_or(anyhow!("gpie err b4"))?
+            .to_string();
+        if page == 0 {
+            page = 1;
+            if epid.starts_with("ep") {
+                for (i, e) in eplist.iter().enumerate() {
+                    if e.pointer("/link").ok_or(anyhow!("gpie err c1"))?.as_str().unwrap().contains(&epid) {
+                        page = i + 1;
+                        break;
+                    }
+                }
             }
-        };
-        let mut cid = j.pointer("/epInfo/cid").ok_or(anyhow!("json err 1"))?.as_i64().unwrap().to_string();
-        let mut bvid = match j.pointer("/epInfo/bvid") {
-            Some(it) => it.as_str().unwrap().to_string(),
-            None => "".into(),
-        };
-        let artist = j.pointer("/mediaInfo/upInfo/name").ok_or(anyhow!("json err3"))?.as_str().unwrap().to_string();
-        let season_type = match j.pointer("/mediaInfo/season_type") {
-            Some(it) => it.as_i64().ok_or(anyhow!("cannot convert to string"))?.to_string(),
-            _ => j.pointer("/mediaInfo/ssType").ok_or(anyhow!("json err"))?.as_i64().unwrap().to_string(),
-        };
-        let eplist = j.pointer("/epList").ok_or(anyhow!("json err 4"))?.as_array().unwrap();
-        self.cm.bvideo_info.write().await.plist.clear();
-        for (i, p) in eplist.iter().enumerate() {
-            if i == 0 && bvid.is_empty() {
-                bvid.push_str(p.pointer("/bvid").ok_or(anyhow!("json err 5"))?.as_str().unwrap());
-                cid = p.pointer("/cid").ok_or(anyhow!("json err 6"))?.as_i64().unwrap().to_string();
-            }
-            if p.pointer("/bvid").ok_or(anyhow!("json err"))?.as_str().unwrap().eq(&bvid) {
-                self.cm.bvideo_info.write().await.current_page = i + 1;
-            }
-            self.cm.bvideo_info.write().await.plist.push(format!(
-                "ep{}",
-                p.pointer("/id").ok_or(anyhow!("json err"))?.as_u64().unwrap()
-            ));
         }
-        Ok((bvid, cid, title, artist, season_type))
+        let ep = match eplist.get(page - 1) {
+            Some(ep) => ep,
+            None => {
+                page = eplist.len();
+                eplist.last().ok_or(anyhow!("gpie err d1"))?
+            }
+        };
+        self.cm.bvideo_info.write().await.current_page = page;
+
+        let bvid = ep.pointer("/bvid").ok_or(anyhow!("gpie err d2"))?.as_str().unwrap().to_string();
+        let cid = ep.pointer("/cid").ok_or(anyhow!("gpie err d3"))?.as_i64().unwrap().to_string();
+        let subtitle = ep.pointer("/long_title").ok_or(anyhow!("gpie err d4"))?.as_str().unwrap().to_string();
+        let title = j.pointer("/title").ok_or(anyhow!("gpie err d5"))?.as_str().unwrap().to_string();
+        let title_number = ep.pointer("/titleFormat").ok_or(anyhow!("gpie err d6"))?.as_str().unwrap().to_string();
+        let referer = ep.pointer("/link").ok_or(anyhow!("gpie err d7"))?.as_str().unwrap().to_string();
+
+        Ok((
+            bvid,
+            cid,
+            format!("{} - {} - {}: {}", &title, page, &title_number, &subtitle),
+            referer,
+            season_type,
+        ))
     }
 
-    pub async fn get_page_info(&self, video_url: &str) -> Result<(String, String, String, String)> {
-        let re = Regex::new(r"\?p=(\d+)").unwrap();
-        let page_index = match re.captures(video_url) {
-            Some(it) => it[1].to_string(),
-            _ => "1".to_string(),
-        };
+    pub async fn get_page_info(&self, video_url: &str, mut page: usize) -> Result<(String, String, String, String)> {
         let client = reqwest::Client::builder()
             .user_agent(crate::utils::gen_ua())
             .connect_timeout(tokio::time::Duration::from_secs(10))
@@ -161,30 +169,27 @@ impl Bilibili {
         let resp = resp.text().await?;
         let re = Regex::new(r"__INITIAL_STATE__=(\{.+?\});").unwrap();
         let j: serde_json::Value =
-            serde_json::from_str(re.captures(&resp).ok_or(anyhow!("gpi regex err 1"))?[1].to_string().as_ref())?;
+            serde_json::from_str(re.captures(&resp).ok_or(anyhow!("gpi err a1"))?[1].to_string().as_ref())?;
         let bvid = j.pointer("/videoData/bvid").ok_or(anyhow!("json err"))?.as_str().unwrap().to_string();
-        let mut title = j.pointer("/videoData/title").ok_or(anyhow!("json err"))?.as_str().unwrap().to_string();
+        let title = j.pointer("/videoData/title").ok_or(anyhow!("json err"))?.as_str().unwrap();
         let artist = j.pointer("/videoData/owner/name").ok_or(anyhow!("json err"))?.as_str().unwrap().to_string();
-        let mut cid = String::new();
         let j = j.pointer("/videoData/pages").ok_or(anyhow!("json err"))?.as_array().unwrap();
-        self.cm.bvideo_info.write().await.plist = vec!["".into(); j.len()];
-        for p in j {
-            let i = p.pointer("/page").ok_or(anyhow!("json err"))?.as_u64().unwrap();
-            let subtitle = match p.pointer("/part").ok_or(anyhow!("json err"))?.as_str() {
-                Some(it) => it,
-                _ => "",
-            };
-            if page_index.eq(format!("{}", i).as_str()) {
-                self.cm.bvideo_info.write().await.current_page = i as usize;
-                cid.push_str(p.pointer("/cid").ok_or(anyhow!("json err"))?.as_u64().unwrap().to_string().as_str());
-                if i > 1 {
-                    let t = title.clone();
-                    title.clear();
-                    title.push_str(format!("{} - {} - {}", &t, &i, &subtitle).as_str());
-                }
-            }
+        if page == 0 {
+            page = 1;
         }
-        Ok((bvid, cid, title, artist))
+        let p = match j.get(page - 1) {
+            Some(p) => p,
+            None => {
+                page = j.len();
+                j.last().ok_or(anyhow!("gpi err c1"))?
+            }
+        };
+        self.cm.bvideo_info.write().await.current_page = page;
+
+        let cid = p.pointer("/cid").ok_or(anyhow!("gpi err c2"))?.as_u64().unwrap().to_string();
+        let subtitle = p.pointer("/part").ok_or(anyhow!("gpi err c3"))?.as_str().unwrap();
+
+        Ok((bvid, cid, format!("{} - {} - {}", title, subtitle, &artist), artist))
     }
 
     pub async fn get_video(&self, page: usize) -> Result<Vec<String>> {
@@ -198,31 +203,8 @@ impl Bilibili {
             self.cm.bvideo_info.read().await.video_type,
             crate::config::config::BVideoType::Bangumi
         ) {
-            let video_url = if page == 0 {
-                let page = self.cm.bvideo_info.read().await.current_page;
-                let u = self.cm.bvideo_info.read().await.base_url.clone();
-                let _ = self.get_page_info_ep(&u).await?;
-                let page = if page > self.cm.bvideo_info.read().await.plist.len() {
-                    self.cm.bvideo_info.read().await.plist.len()
-                } else {
-                    page
-                };
-                format!(
-                    "https://www.bilibili.com/bangumi/play/{}",
-                    self.cm.bvideo_info.read().await.plist[page - 1]
-                )
-            } else {
-                let page = if page > self.cm.bvideo_info.read().await.plist.len() {
-                    self.cm.bvideo_info.read().await.plist.len()
-                } else {
-                    page
-                };
-                format!(
-                    "https://www.bilibili.com/bangumi/play/{}",
-                    self.cm.bvideo_info.read().await.plist[page - 1]
-                )
-            };
-            let (bvid, cid, title, _artist, _season_type) = self.get_page_info_ep(&video_url).await?;
+            let u = self.cm.bvideo_info.read().await.base_url.clone();
+            let (bvid, cid, title, referer, _season_type) = self.get_page_info_ep(&u, page).await?;
             ret.push(title);
             ret.push(cid.clone());
             let mut param1 = Vec::new();
@@ -239,7 +221,7 @@ impl Bilibili {
                 .build()?;
             let resp = client
                 .get(&self.apiv_ep)
-                .header("Referer", video_url)
+                .header("Referer", &referer)
                 .header("Cookie", cookies)
                 .query(&param1)
                 .send()
@@ -341,22 +323,9 @@ impl Bilibili {
                 }
             }
         } else {
-            let video_url = if page == 0 {
-                format!(
-                    "{}?p={}",
-                    self.cm.bvideo_info.read().await.base_url,
-                    self.cm.bvideo_info.read().await.current_page
-                )
-            } else {
-                let page = if page > self.cm.bvideo_info.read().await.plist.len() {
-                    self.cm.bvideo_info.read().await.plist.len()
-                } else {
-                    page
-                };
-                format!("{}?p={}", self.cm.bvideo_info.read().await.base_url, page)
-            };
-            let (bvid, cid, title, artist) = self.get_page_info(&video_url).await?;
-            println!("{} {} {} {}", &bvid, &cid, &title, &artist);
+            let u = self.cm.bvideo_info.read().await.base_url.clone();
+            let (bvid, cid, title, _artist) = self.get_page_info(&u, page).await?;
+            // println!("{} {} {} {}", &bvid, &cid, &title, &artist);
             ret.push(title);
             ret.push(cid.clone());
             let mut param1 = Vec::new();
@@ -373,7 +342,7 @@ impl Bilibili {
                 .build()?;
             let resp = client
                 .get(&self.apiv)
-                .header("Referer", video_url)
+                .header("Referer", u)
                 .header("Cookie", cookies)
                 .query(&param1)
                 .send()

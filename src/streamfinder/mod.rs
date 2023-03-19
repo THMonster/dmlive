@@ -12,7 +12,6 @@ use anyhow::anyhow;
 use anyhow::Result;
 use log::info;
 use log::warn;
-use std::borrow::Cow;
 use std::sync::Arc;
 
 pub struct StreamFinder {
@@ -58,7 +57,8 @@ impl StreamFinder {
                     }
                     crate::config::Site::BiliVideo => {
                         let b = bilibili::Bilibili::new(self.cm.clone());
-                        match b.get_video(0).await {
+                        let p = self.cm.bvideo_info.read().await.current_page;
+                        match b.get_video(p).await {
                             Ok(mut u) => {
                                 return Ok((u.remove(0), u));
                             }

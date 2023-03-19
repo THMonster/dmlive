@@ -65,7 +65,7 @@ impl ConfigManager {
         let mut bvinfo = BVideoInfo {
             base_url: "".into(),
             video_type: BVideoType::Video,
-            current_page: 1,
+            current_page: 0,
             plist: Vec::new(),
         };
         let c = std::fs::read(config_path).unwrap();
@@ -77,11 +77,12 @@ impl ConfigManager {
         } else if room_url.contains("bilibili.com/") {
             let u = Url::parse(&room_url).unwrap();
             for q in u.query_pairs() {
-                if q.0.eq("p") { bvinfo.current_page = q.1.parse().unwrap();
+                if q.0.eq("p") {
+                    bvinfo.current_page = q.1.parse().unwrap();
                 }
             }
             let vid = u.path_segments().unwrap().filter(|x| !x.is_empty()).last().unwrap().to_string();
-            if vid.starts_with("BV") {
+            if vid.starts_with("BV") || vid.starts_with("av") {
                 bvinfo.video_type = BVideoType::Video;
                 bvinfo.base_url.push_str(format!("https://www.bilibili.com/video/{}", vid).as_str());
             } else {
