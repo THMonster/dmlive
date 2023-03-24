@@ -1,6 +1,6 @@
 [package]
 name = "dmlive"
-version = "5.1.2"
+version = "5.2.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
