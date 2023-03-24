@@ -92,45 +92,31 @@ impl Youtube {
     }
 
     async fn get_room_info(&self, url: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
-        let cid: String;
-        let vid: String;
         let client = reqwest::Client::new();
-        if url.contains("youtube.com/channel/") {
-            cid = url::Url::parse(url)?
-                .path_segments()
-                .ok_or("rid parse error 1")?
-                .last()
-                .ok_or("rid parse error 2")?
-                .to_string();
-            let ch_url = format!("https://www.youtube.com/channel/{}/videos", &cid);
-            let resp = client
-                .get(&ch_url)
-                .header("User-Agent", crate::utils::gen_ua())
-                .header("Accept-Language", "en-US")
-                .header("Referer", "https://www.youtube.com/")
-                .send()
-                .await?
-                .text()
-                .await?;
-            let re = fancy_regex::Regex::new(r#""gridVideoRenderer"((.(?!"gridVideoRenderer"))(?!"style":"UPCOMING"))+"label":"(LIVE|LIVE NOW|PREMIERING NOW)"([\s\S](?!"style":"UPCOMING"))+?("gridVideoRenderer"|</script>)"#).unwrap();
-            let t = re.captures(&resp)?.ok_or("gri err 1")?.get(0).ok_or("gri err 1-2")?.as_str();
-            let re = Regex::new(r#""gridVideoRenderer".+?"videoId":"(.+?)""#).unwrap();
-            vid = re.captures(t).ok_or("gri err 2")?[1].to_string();
+        let url = url::Url::parse(url)?;
+        let room_url = if url.as_str().contains("youtube.com/channel/") {
+            let cid = url.path_segments().ok_or("gri err a1")?.last().ok_or("gri err a12")?;
+            format!("https://www.youtube.com/channel/{}/live", &cid)
         } else {
-            let re = Regex::new(r"youtube.com/watch\?v=([^/?]+)").unwrap();
-            vid = re.captures(url).ok_or("gri err 3")?[1].to_string();
-            let resp = client
-                .get(format!("https://www.youtube.com/embed/{}", &vid))
-                .header("User-Agent", crate::utils::gen_ua())
-                .header("Accept-Language", "en-US")
-                .header("Referer", "https://www.youtube.com/")
-                .send()
-                .await?
-                .text()
-                .await?;
-            let re = Regex::new(r#"\\"channelId\\":\\"(.{24})\\""#).unwrap();
-            cid = re.captures(&resp).ok_or("gri err 4")?[1].to_string();
-        }
+            for q in url.query_pairs() {
+                if q.0.eq("v") {}
+            }
+            let vid = url.query_pairs().find(|q| q.0.eq("v")).unwrap().1;
+            format!("https://www.youtube.com/watch?v={}", &vid)
+        };
+        let resp = client
+            .get(&room_url)
+            .header("User-Agent", crate::utils::gen_ua())
+            .header("Accept-Language", "en-US")
+            .header("Referer", "https://www.youtube.com/")
+            .send()
+            .await?
+            .text()
+            .await?;
+        let re = Regex::new(r"ytInitialPlayerResponse\s*=\s*(\{.+?\});.*?</script>").unwrap();
+        let j: serde_json::Value = serde_json::from_str(&re.captures(&resp).ok_or("gri err b1")?[1])?;
+        let vid = j.pointer("/videoDetails/videoId").ok_or("gri err b2")?.as_str().unwrap().to_string();
+        let cid = j.pointer("/videoDetails/channelId").ok_or("gri err b3")?.as_str().unwrap().to_string();
         // println!("{} {}", &vid, &cid);
         Ok((vid, cid))
     }

@@ -189,7 +189,12 @@ impl Bilibili {
         let cid = p.pointer("/cid").ok_or(anyhow!("gpi err c2"))?.as_u64().unwrap().to_string();
         let subtitle = p.pointer("/part").ok_or(anyhow!("gpi err c3"))?.as_str().unwrap();
 
-        Ok((bvid, cid, format!("{} - {} - {}", title, subtitle, &artist), artist))
+        Ok((
+            bvid,
+            cid,
+            format!("{} - {} - {} - {}", title, page, subtitle, &artist),
+            artist,
+        ))
     }
 
     pub async fn get_video(&self, page: usize) -> Result<Vec<String>> {

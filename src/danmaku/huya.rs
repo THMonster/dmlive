@@ -1,4 +1,7 @@
-use futures::{stream::StreamExt, SinkExt};
+use futures::{
+    stream::StreamExt,
+    SinkExt,
+};
 use regex::Regex;
 use reqwest::Url;
 use std::collections::HashMap;
@@ -50,24 +53,20 @@ impl Huya {
     }
 
     async fn get_ws_info(&self, url: &str) -> Result<(String, Vec<u8>), Box<dyn std::error::Error>> {
-        let rid =
-            Url::parse(url)?.path_segments().ok_or("rid parse error 1")?.last().ok_or("rid parse error 2")?.to_string();
+        let url = Url::parse(url)?;
+        let rid = url.path_segments().ok_or("gwi err a1")?.last().ok_or("gwi err a12")?;
         let client = reqwest::Client::new();
         let resp = client
-            .get(format!("https://m.huya.com/{}", &rid))
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (Android 10; Mobile; rv:89.0) Gecko/80.0 Firefox/80.0",
-            )
-            .header("Referer", url)
+            .get(format!("https://www.huya.com/{}", &rid))
+            .header("User-Agent", crate::utils::gen_ua())
+            .header("Referer", "https://www.huya.com/")
             .send()
             .await?
             .text()
             .await?;
-        let re = Regex::new(r#"window.HNF_GLOBAL_INIT *= *(\{.+?\})\s*</script>"#).unwrap();
-        let j = re.captures(&resp).ok_or("gwi err 1")?[1].to_string();
-        let j: serde_json::Value = serde_json::from_str(&j)?;
-        let ayyuid = j.pointer("/roomInfo/tProfileInfo/lUid").ok_or("gwi err 2")?.as_u64().ok_or("gwi err 2-2")?;
+        let re = Regex::new(r"var\s+TT_PROFILE_INFO\s+=\s+(.+\});").unwrap();
+        let j: serde_json::Value = serde_json::from_str(&re.captures(&resp).ok_or("gwi err b1")?[1])?;
+        let ayyuid = j.pointer("/lp").ok_or("gwi err b2")?.to_string().replace(r#"""#, "");
 
         let mut t = Vec::new();
         t.push(format!("live:{}", ayyuid));
