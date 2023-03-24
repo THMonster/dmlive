@@ -3,9 +3,9 @@ use anyhow::Result;
 use log::info;
 use log::warn;
 use std::sync::Arc;
-use tokio::fs::OpenOptions;
-use tokio::net::TcpStream;
+use tokio::sync::oneshot;
 use tokio::task::spawn_local;
+use tokio::time::timeout;
 use tokio::{
     io::{
         AsyncBufReadExt,
@@ -23,7 +23,7 @@ use crate::{
 pub struct FfmpegControl {
     ipc_manager: Arc<crate::ipcmanager::IPCManager>,
     cm: Arc<ConfigManager>,
-    ff_command_tx: RwLock<Option<async_channel::Sender<bool>>>,
+    ff_command_tx: RwLock<Option<oneshot::Sender<bool>>>,
     mtx: async_channel::Sender<DMLMessage>,
 }
 impl FfmpegControl {
@@ -41,38 +41,38 @@ impl FfmpegControl {
     }
 
     async fn run_write_record_task(&self, title: String) -> tokio::task::JoinHandle<()> {
-        let tcp_addr = self.ipc_manager.get_f2m_socket_path()[6..].to_string();
+        let in_stream = self.ipc_manager.get_f2m_socket_path();
         spawn_local(async move {
+            let now = chrono::Local::now();
+            let filename = format!("{} - {}.mkv", title.replace('/', "-"), now.format("%F %T"));
             loop {
-                let socket = match TcpStream::connect(&tcp_addr).await {
-                    Ok(it) => it,
-                    Err(_) => {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-                        continue;
+                let mut cmd = Command::new("ffmpeg");
+                cmd.args(&["-y", "-xerror", "-hide_banner", "-nostats", "-nostdin"]);
+                cmd.arg("-i");
+                cmd.arg(&in_stream);
+                cmd.args(&["-c", "copy", "-f", "matroska"]);
+                cmd.arg(&filename);
+                let mut ff = cmd
+                    .stdin(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::piped())
+                    .kill_on_drop(false)
+                    .spawn()
+                    .unwrap();
+                let mut reader = tokio::io::BufReader::new(ff.stderr.take().unwrap()).lines();
+                let mut retry = false;
+                while let Some(line) = reader.next_line().await.unwrap_or(None) {
+                    info!("{}", &line);
+                    if line.contains("Connection refused") {
+                        retry = true;
                     }
-                };
-                let now = chrono::Local::now();
-                let mut file = match OpenOptions::new()
-                    .read(false)
-                    .write(true)
-                    .create(true)
-                    .open(format!(
-                        "{} - {}.mkv",
-                        title.replace('/', "-"),
-                        now.format("%F %T")
-                    ))
-                    .await
-                {
-                    Ok(it) => it,
-                    Err(e) => {
-                        warn!("open record file failed: {}", e);
-                        break;
-                    }
-                };
-
-                let mut socket = tokio::io::BufReader::with_capacity(3 * 1024, socket);
-                let _ = tokio::io::copy_buf(&mut socket, &mut file).await;
-                return;
+                }
+                let _ = ff.wait().await;
+                if retry == true {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                    continue;
+                } else {
+                    return;
+                }
             }
         })
     }
@@ -82,6 +82,7 @@ impl FfmpegControl {
         let mut ret = Command::new("ffmpeg");
         ret.args(&["-y", "-xerror"]);
         ret.arg("-hide_banner");
+        ret.arg("-nostats");
         // ret.arg("-report");
         // ret.arg("-loglevel").arg("quiet");
         match stream_type {
@@ -139,7 +140,10 @@ impl FfmpegControl {
     }
 
     pub async fn quit(&self) -> Result<()> {
-        self.ff_command_tx.read().await.as_ref().ok_or(anyhow!("ffmpeg quit err 1"))?.send(true).await?;
+        match self.ff_command_tx.write().await.take().ok_or(anyhow!("ffmpeg quit err 1"))?.send(true) {
+            Ok(_) => {}
+            Err(_) => {}
+        };
         Ok(())
     }
 
@@ -154,32 +158,47 @@ impl FfmpegControl {
             .unwrap();
         let mut ffstdin = ff.stdin.take().unwrap();
         let ffstderr = ff.stderr.take().unwrap();
-        let (tx, rx) = async_channel::unbounded();
+        let (tx, rx) = oneshot::channel();
         *self.ff_command_tx.write().await = Some(tx);
         tokio::task::spawn_local(async move {
-            while (rx.recv().await).is_ok() {
-                info!("close ffmpeg");
-                let _ = ffstdin.write_all("q\n".as_bytes()).await;
+            match rx.await {
+                Ok(_) => {
+                    info!("close ffmpeg");
+                    let _ = ffstdin.write_all("q\n".as_bytes()).await;
+                }
+                Err(_) => {}
             }
         });
+
         let s1 = self.clone();
         tokio::task::spawn_local(async move {
             let mut reader = tokio::io::BufReader::new(ffstderr).lines();
-            let res_re = regex::Regex::new(r#"Stream #[0-9].+? Video:.*?\D(\d{3,5})x(\d{2,5})\D.*"#).unwrap();
-            while let Some(line) = reader.next_line().await.unwrap_or(Some("err".to_string())) {
-                info!("{}", &line);
-                match res_re.captures(&line) {
-                    Some(it) => {
-                        info!("{}", &line);
-                        let w = it[1].parse().unwrap();
-                        let h = it[2].parse().unwrap();
-                        if w < 100 || h < 100 {
-                            let _ = s1.quit().await;
+            let s11 = s1.clone();
+            match timeout(tokio::time::Duration::from_secs(10), async move {
+                let res_re = regex::Regex::new(r#"Stream #[0-9].+? Video:.*?\D(\d{3,5})x(\d{2,5})\D.*"#).unwrap();
+                while let Some(line) = reader.next_line().await.unwrap_or(None) {
+                    info!("{}", &line);
+                    match res_re.captures(&line) {
+                        Some(it) => {
+                            info!("{}", &line);
+                            let w = it[1].parse().unwrap();
+                            let h = it[2].parse().unwrap();
+                            if w < 100 || h < 100 {
+                                let _ = s11.quit().await;
+                            }
+                            let _ = s11.mtx.send(DMLMessage::SetVideoRes((w, h))).await;
+                            return;
                         }
-                        let _ = s1.mtx.send(DMLMessage::SetVideoRes((w, h))).await;
-                        break;
+                        None => {}
                     }
-                    None => {}
+                }
+            })
+            .await
+            {
+                Ok(_) => {}
+                Err(_) => {
+                    warn!("set video resolution failed!");
+                    let _ = s1.quit().await;
                 }
             }
         });
