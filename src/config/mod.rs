@@ -47,6 +47,7 @@ pub struct ConfigManager {
     pub font_scale: RwLock<f64>,
     pub font_alpha: RwLock<f64>,
     pub danmaku_speed: RwLock<u64>,
+    pub display_fps: RwLock<(u64, u64)>,
     pub room_url: String,
     pub http_address: Option<String>,
     pub run_mode: RunMode,
@@ -125,6 +126,7 @@ impl ConfigManager {
             on_writing: AtomicBool::new(false),
             plat,
             cookies_from_browser: c.cookies_from_browser.unwrap_or_else(|| "".into()),
+            display_fps: RwLock::new((60, 0)),
         }
     }
 

@@ -7,6 +7,7 @@ pub struct CmdParser {
     pub fsup: bool,
     pub fsdown: bool,
     pub nick: bool,
+    pub fps: bool,
     pub fs: Option<f64>,
     pub fa: Option<f64>,
     pub speed: Option<u64>,
@@ -21,6 +22,7 @@ impl CmdParser {
         let mut fsup = false;
         let mut fsdown = false;
         let mut nick = false;
+        let mut fps = false;
         let mut fs = None;
         let mut fa = None;
         let mut speed = None;
@@ -41,6 +43,8 @@ impl CmdParser {
                     fsdown = true;
                 } else if cmd.trim().eq("nick") {
                     nick = true;
+                } else if cmd.trim().eq("fps") {
+                    fps = true;
                 }
                 let subcmds: Vec<&str> = cmd.split('=').collect();
                 let mut iter = subcmds.iter();
@@ -79,6 +83,7 @@ impl CmdParser {
             fsup,
             fsdown,
             nick,
+            fps,
             fs,
             fa,
             speed,

@@ -7,18 +7,12 @@ use tokio::sync::oneshot;
 use tokio::task::spawn_local;
 use tokio::time::timeout;
 use tokio::{
-    io::{
-        AsyncBufReadExt,
-        AsyncWriteExt,
-    },
+    io::{AsyncBufReadExt, AsyncWriteExt},
     process::Command,
     sync::RwLock,
 };
 
-use crate::{
-    config::ConfigManager,
-    dmlive::DMLMessage,
-};
+use crate::{config::ConfigManager, dmlive::DMLMessage};
 
 pub struct FfmpegControl {
     ipc_manager: Arc<crate::ipcmanager::IPCManager>,
@@ -42,9 +36,17 @@ impl FfmpegControl {
 
     async fn run_write_record_task(&self, title: String) -> tokio::task::JoinHandle<()> {
         let in_stream = self.ipc_manager.get_f2m_socket_path();
+        let max_len = match title.char_indices().nth(70) {
+            Some(it) => it.0,
+            None => title.len(),
+        };
         spawn_local(async move {
             let now = chrono::Local::now();
-            let filename = format!("{} - {}.mkv", title.replace('/', "-"), now.format("%F %T"));
+            let filename = format!(
+                "{} - {}.mkv",
+                title[..max_len].replace('/', "-"),
+                now.format("%F %T")
+            );
             loop {
                 let mut cmd = Command::new("ffmpeg");
                 cmd.args(&["-y", "-xerror", "-hide_banner", "-nostats", "-nostdin"]);

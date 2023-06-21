@@ -54,7 +54,6 @@ impl MpvControl {
             "--keep-open=no",
             "--idle=yes",
             "--player-operation-mode=pseudo-gui",
-            r#"--vf=lavfi="fps=60""#,
         ])
         .arg(format!(
             "--input-ipc-server={}",
@@ -81,7 +80,7 @@ impl MpvControl {
         self.mpv_command_tx
             .send(format!(
                 "{{ \"command\": [\"set_property\", \"force-media-title\", \"{}\"] }}\n",
-                title
+                title.replace(r#"""#, r#"\""#)
             ))
             .await?;
         Ok(())
@@ -111,12 +110,13 @@ impl MpvControl {
         self.mpv_command_tx
             .send(
                 r#"{ "command": ["keybind", "alt+r", "script-message dml:r"] }
-{ "command": ["keybind", "alt+z", "script-message dml:fsdown"] }
-{ "command": ["keybind", "alt+x", "script-message dml:fsup"] }
-{ "command": ["keybind", "alt+i", "script-message dml:nick"] }
-{ "command": ["keybind", "alt+b", "script-message dml:back"] }
-{ "command": ["keybind", "alt+n", "script-message dml:next"] }
-"#
+                { "command": ["keybind", "alt+z", "script-message dml:fsdown"] }
+                { "command": ["keybind", "alt+x", "script-message dml:fsup"] }
+                { "command": ["keybind", "alt+i", "script-message dml:nick"] }
+                { "command": ["keybind", "alt+b", "script-message dml:back"] }
+                { "command": ["keybind", "alt+n", "script-message dml:next"] }
+                { "command": ["keybind", "alt+f", "script-message dml:fps"] }
+                "#
                 .into(),
             )
             .await?;
@@ -126,18 +126,54 @@ impl MpvControl {
 
     async fn handle_mpv_event(self: &Arc<Self>, line: &str, last_time: &mut i64) -> Result<()> {
         let j: serde_json::Value = serde_json::from_str(line)?;
-        if j.pointer("/data/w").is_some() {
-            let w = j.pointer("/data/w").ok_or(anyhow!("hme err 5"))?.as_u64().ok_or(anyhow!("hme err 6"))?;
-            let h = j.pointer("/data/h").ok_or(anyhow!("hme err 7"))?.as_u64().ok_or(anyhow!("hme err 8"))?;
-            if matches!(self.cm.site, crate::config::Site::BiliVideo) {
-                let _ = self.mtx.send(DMLMessage::SetVideoRes((w, h))).await;
-                self.mpv_command_tx.send("{ \"command\": [\"sub-remove\", \"1\"], \"async\": true }\n".into()).await?;
-                self.mpv_command_tx
-                    .send(format!(
-                        "{{ \"command\": [\"sub-add\", \"{}\"], \"async\": true }}\n",
-                        self.ipc_manager.get_danmaku_socket_path()
-                    ))
-                    .await?;
+        if let Some(rid) = j.pointer("/request_id") {
+            if rid.as_u64().eq(&Some(114)) {
+                let w = j.pointer("/data/w").ok_or(anyhow!("hme err a1"))?.as_u64().unwrap();
+                let h = j.pointer("/data/h").ok_or(anyhow!("hme err a2"))?.as_u64().unwrap();
+                if matches!(self.cm.site, crate::config::Site::BiliVideo) {
+                    let _ = self.mtx.send(DMLMessage::SetVideoRes((w, h))).await;
+                    self.mpv_command_tx
+                        .send(
+                            r#"{ "command": ["sub-remove", "1"], "async": true }
+                              "#
+                            .into(),
+                        )
+                        .await?;
+                    self.mpv_command_tx
+                        .send(format!(
+                            "{{ \"command\": [\"sub-add\", \"{}\"], \"async\": true }}\n",
+                            self.ipc_manager.get_danmaku_socket_path()
+                        ))
+                        .await?;
+                }
+            } else if rid.as_u64().eq(&Some(514)) {
+                match j.pointer("/data") {
+                    Some(it) => match it.as_f64() {
+                        Some(it) => {
+                            self.cm.display_fps.write().await.0 = it.round() as u64;
+                        }
+                        None => {}
+                    },
+                    None => {}
+                }
+            } else if rid.as_u64().eq(&Some(1919)) {
+                match j.pointer("/data") {
+                    Some(it) => match it.as_f64() {
+                        Some(it) => {
+                            if self.cm.display_fps.read().await.1 == 0 && it < 59.0 {
+                                self.mpv_command_tx
+                                    .send(
+                                        r#"{ "command": ["set_property", "vf", "fps=fps=60:round=near"] }
+                                        "#
+                                        .into(),
+                                    )
+                                    .await?;
+                            }
+                        }
+                        None => {}
+                    },
+                    None => {}
+                }
             }
         }
         let event = j.pointer("/event").ok_or(anyhow!("hme err 1"))?.as_str().ok_or(anyhow!("hme err 2"))?;
@@ -160,7 +196,16 @@ impl MpvControl {
             }
         } else if event.eq("file-loaded") {
             tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-            let _ = self.mpv_command_tx.send("{ \"command\": [\"get_property\", \"video-params\"] }\n".into()).await;
+            let _ = self
+                .mpv_command_tx
+                .send(
+                    r#"{ "command": ["get_property", "video-params"], "request_id": 114, "async": true } }
+                    { "command": ["get_property", "display-fps"], "request_id": 514, "async": true }
+                    { "command": ["get_property", "container-fps"], "request_id": 1919, "async": true }
+                    "#
+                    .into(),
+                )
+                .await;
         } else if event.eq("client-message") && (chrono::Utc::now().timestamp_millis() - *last_time > 1000) {
             *last_time = chrono::Utc::now().timestamp_millis();
             let cmds = cmdparser::CmdParser::new(
@@ -211,6 +256,31 @@ impl MpvControl {
             if cmds.next {
                 let p = self.cm.bvideo_info.read().await.current_page.saturating_add(1);
                 let _ = self.mtx.send(DMLMessage::GoToBVPage(p)).await;
+            }
+            if cmds.fps {
+                let fps: u64 = {
+                    let df = self.cm.display_fps.read().await;
+                    let i = df.1 as usize % 3;
+                    [df.0, 0u64, 60u64][i]
+                };
+                if fps == 0 {
+                    self.mpv_command_tx
+                        .send(
+                            r#"{ "command": ["set_property", "vf", ""] }
+                            "#
+                            .into(),
+                        )
+                        .await?;
+                } else {
+                    self.mpv_command_tx
+                        .send(format!(
+                            r#"{{ "command": ["set_property", "vf", "fps=fps={}:round=near"] }}
+                        "#,
+                            fps
+                        ))
+                        .await?;
+                }
+                self.cm.display_fps.write().await.1 += 1;
             }
         }
         Ok(())

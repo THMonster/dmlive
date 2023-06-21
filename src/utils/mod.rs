@@ -26,6 +26,10 @@ pub fn gen_ua() -> String {
     //     .into()
 }
 
+pub fn gen_ua_safari() -> String {
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15".into()
+}
+
 // pub async fn js_call(js: &str, func: &str, args: &Vec<(u8, String)>) -> anyhow::Result<Vec<String>> {
 pub async fn js_call(js: &str) -> anyhow::Result<Vec<String>> {
     let mut rt =

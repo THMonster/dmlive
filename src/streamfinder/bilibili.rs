@@ -1,11 +1,9 @@
 use crate::config::ConfigManager;
 use anyhow::anyhow;
 use anyhow::Result;
+use log::warn;
 use regex::Regex;
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 use url::Url;
 
 pub struct Bilibili {
@@ -187,14 +185,14 @@ impl Bilibili {
         self.cm.bvideo_info.write().await.current_page = page;
 
         let cid = p.pointer("/cid").ok_or(anyhow!("gpi err c2"))?.as_u64().unwrap().to_string();
-        let subtitle = p.pointer("/part").ok_or(anyhow!("gpi err c3"))?.as_str().unwrap();
+        let final_title = if j.len() == 1 {
+            format!("{} - {}", &title, &artist)
+        } else {
+            let subtitle = p.pointer("/part").ok_or(anyhow!("gpi err c3"))?.as_str().unwrap();
+            format!("{} - {} - {} - {}", &title, page, &subtitle, &artist)
+        };
 
-        Ok((
-            bvid,
-            cid,
-            format!("{} - {} - {} - {}", title, page, subtitle, &artist),
-            artist,
-        ))
+        Ok((bvid, cid, final_title, artist))
     }
 
     pub async fn get_video(&self, page: usize) -> Result<Vec<String>> {
@@ -215,13 +213,12 @@ impl Bilibili {
             let mut param1 = Vec::new();
             param1.push(("cid", cid.as_str()));
             param1.push(("bvid", bvid.as_str()));
-            param1.push(("qn", "120"));
-            param1.push(("otype", "json"));
-            param1.push(("fourk", "1"));
-            param1.push(("fnver", "0"));
-            param1.push(("fnval", "16"));
+            // param1.push(("qn", "126"));
+            // param1.push(("fourk", "1"));
+            // param1.push(("fnver", "0"));
+            param1.push(("fnval", "3024"));
             let client = reqwest::Client::builder()
-                .user_agent(crate::utils::gen_ua())
+                .user_agent(crate::utils::gen_ua_safari())
                 .connect_timeout(tokio::time::Duration::from_secs(10))
                 .build()?;
             let resp = client
@@ -234,99 +231,33 @@ impl Bilibili {
                 .json::<serde_json::Value>()
                 .await?;
             // println!("{:?}", &resp);
-            let j = resp.pointer("/result").ok_or(anyhow!("get_video pje 1"))?;
-            if j.pointer("/dash").is_some() {
-                let dash_id = j
-                    .pointer("/dash/video/0/id")
-                    .ok_or(anyhow!("get_video pje 2"))?
-                    .as_i64()
-                    .ok_or(anyhow!("get_video ce 1"))?;
-                if j.pointer("/dash/video")
-                    .ok_or(anyhow!("get_video pje 3"))?
-                    .as_array()
-                    .ok_or(anyhow!("cannot convert to vec"))?
-                    .len()
-                    > 1
-                    && dash_id
-                        == j.pointer("/dash/video/0/id")
-                            .ok_or(anyhow!("get_video pje 4"))?
-                            .as_i64()
-                            .ok_or(anyhow!(""))?
-                {
-                    if j.pointer("/dash/video/0/codecid")
-                        .ok_or(anyhow!("get_video pje n"))?
-                        .as_i64()
-                        .ok_or(anyhow!(""))?
-                        == 12
-                    {
-                        ret.push(
-                            j.pointer("/dash/video/0/base_url")
-                                .ok_or(anyhow!("get_video pje 7"))?
-                                .as_str()
-                                .ok_or(anyhow!(""))?
-                                .to_string(),
-                        );
-                        ret.push(
-                            j.pointer("/dash/audio/0/base_url")
-                                .ok_or(anyhow!("get_video pje 6"))?
-                                .as_str()
-                                .ok_or(anyhow!(""))?
-                                .to_string(),
-                        );
-                        ret.push(
-                            j.pointer("/dash/video/1/base_url")
-                                .ok_or(anyhow!("get_video pje 5"))?
-                                .as_str()
-                                .ok_or(anyhow!(""))?
-                                .to_string(),
-                        );
-                    } else {
-                        ret.push(
-                            j.pointer("/dash/video/1/base_url")
-                                .ok_or(anyhow!("get_video pje 10"))?
-                                .as_str()
-                                .ok_or(anyhow!(""))?
-                                .to_string(),
-                        );
-                        ret.push(
-                            j.pointer("/dash/audio/0/base_url")
-                                .ok_or(anyhow!("get_video pje 9"))?
-                                .as_str()
-                                .ok_or(anyhow!(""))?
-                                .to_string(),
-                        );
-                        ret.push(
-                            j.pointer("/dash/video/0/base_url")
-                                .ok_or(anyhow!("get_video pje 8"))?
-                                .as_str()
-                                .ok_or(anyhow!(""))?
-                                .to_string(),
-                        );
-                    }
-                } else {
-                    ret.push(
-                        j.pointer("/dash/video/0/base_url")
-                            .ok_or(anyhow!("get_video pje 11"))?
-                            .as_str()
-                            .ok_or(anyhow!(""))?
-                            .to_string(),
-                    );
-                    ret.push(
-                        j.pointer("/dash/audio/0/base_url")
-                            .ok_or(anyhow!("get_video pje 12"))?
-                            .as_str()
-                            .ok_or(anyhow!(""))?
-                            .to_string(),
-                    );
+            let j = resp.pointer("/result").ok_or(anyhow!("gv err b1"))?;
+            let mut videos = HashMap::new();
+            let mut audios = HashMap::new();
+            for ele in j.pointer("/dash/video").ok_or(anyhow!("gv err b2"))?.as_array().unwrap() {
+                let mut id = ele.pointer("/id").ok_or(anyhow!("gv err k3"))?.as_u64().unwrap() * 10;
+                if ele.pointer("/codecid").ok_or(anyhow!("gv err k31"))?.as_u64().eq(&Some(7)) {
+                    id += 1;
                 }
-            } else {
-                let videos = j.pointer("/durl").ok_or(anyhow!("get_video pje 13"))?.as_array().ok_or(anyhow!(""))?;
-                for v in videos {
-                    ret.push(
-                        v.pointer("url").ok_or(anyhow!("get_video pje 14"))?.as_str().ok_or(anyhow!(""))?.to_string(),
-                    );
-                }
+                videos.insert(
+                    id,
+                    ele.pointer("/base_url").ok_or(anyhow!("gv err b4"))?.as_str().unwrap(),
+                );
             }
+            for ele in j.pointer("/dash/audio").ok_or(anyhow!("gv err b5"))?.as_array().unwrap() {
+                audios.insert(
+                    ele.pointer("/id").ok_or(anyhow!("gv err b6"))?.as_u64().unwrap(),
+                    ele.pointer("/base_url").ok_or(anyhow!("gv err b7"))?.as_str().unwrap(),
+                );
+            }
+            if let Some(ele) = j.pointer("/dash/flac/audio") {
+                audios.insert(
+                    ele.pointer("/id").ok_or(anyhow!("gv err c1"))?.as_u64().unwrap() + 100,
+                    ele.pointer("/base_url").ok_or(anyhow!("gv err c2"))?.as_str().unwrap(),
+                );
+            }
+            ret.push(videos.iter().max_by_key(|x| x.0).unwrap().1.to_string());
+            ret.push(audios.iter().max_by_key(|x| x.0).unwrap().1.to_string());
         } else {
             let u = self.cm.bvideo_info.read().await.base_url.clone();
             let (bvid, cid, title, _artist) = self.get_page_info(&u, page).await?;
@@ -336,102 +267,46 @@ impl Bilibili {
             let mut param1 = Vec::new();
             param1.push(("cid", cid.as_str()));
             param1.push(("bvid", bvid.as_str()));
-            param1.push(("qn", "120"));
-            param1.push(("otype", "json"));
-            param1.push(("fourk", "1"));
-            param1.push(("fnver", "0"));
-            param1.push(("fnval", "16"));
+            param1.push(("fnval", "3024"));
             let client = reqwest::Client::builder()
-                .user_agent(crate::utils::gen_ua())
+                .user_agent(crate::utils::gen_ua_safari())
                 .connect_timeout(tokio::time::Duration::from_secs(10))
                 .build()?;
             let resp = client
                 .get(&self.apiv)
-                .header("Referer", u)
                 .header("Cookie", cookies)
                 .query(&param1)
                 .send()
                 .await?
                 .json::<serde_json::Value>()
                 .await?;
-            let j = resp.pointer("/data").ok_or(anyhow!("get_video pje 15"))?;
-            if j.pointer("/dash").is_some() {
-                let dash_id = j.pointer("/dash/video/0/id").ok_or(anyhow!("get_video pje 16"))?.as_i64().unwrap();
-                if j.pointer("/dash/video")
-                    .ok_or(anyhow!("get_video pje 17"))?
-                    .as_array()
-                    .ok_or(anyhow!("cannot convert to vec"))?
-                    .len()
-                    > 1
-                    && dash_id == j.pointer("/dash/video/0/id").ok_or(anyhow!("get_video pje 18"))?.as_i64().unwrap()
-                {
-                    if j.pointer("/dash/video/0/codecid").ok_or(anyhow!("get_video pje 19"))?.as_i64().unwrap() == 12 {
-                        ret.push(
-                            j.pointer("/dash/video/0/base_url")
-                                .ok_or(anyhow!("get_video pje 22"))?
-                                .as_str()
-                                .unwrap()
-                                .to_string(),
-                        );
-                        ret.push(
-                            j.pointer("/dash/audio/0/base_url")
-                                .ok_or(anyhow!("get_video pje 21"))?
-                                .as_str()
-                                .unwrap()
-                                .to_string(),
-                        );
-                        ret.push(
-                            j.pointer("/dash/video/1/base_url")
-                                .ok_or(anyhow!("get_video pje 20"))?
-                                .as_str()
-                                .unwrap()
-                                .to_string(),
-                        );
-                    } else {
-                        ret.push(
-                            j.pointer("/dash/video/1/base_url")
-                                .ok_or(anyhow!("get_video pje 25"))?
-                                .as_str()
-                                .unwrap()
-                                .to_string(),
-                        );
-                        ret.push(
-                            j.pointer("/dash/audio/0/base_url")
-                                .ok_or(anyhow!("get_video pje 24"))?
-                                .as_str()
-                                .unwrap()
-                                .to_string(),
-                        );
-                        ret.push(
-                            j.pointer("/dash/video/0/base_url")
-                                .ok_or(anyhow!("get_video pje 23"))?
-                                .as_str()
-                                .unwrap()
-                                .to_string(),
-                        );
-                    }
-                } else {
-                    ret.push(
-                        j.pointer("/dash/video/0/base_url")
-                            .ok_or(anyhow!("get_video pje 26"))?
-                            .as_str()
-                            .unwrap()
-                            .to_string(),
-                    );
-                    ret.push(
-                        j.pointer("/dash/audio/0/base_url")
-                            .ok_or(anyhow!("get_video pje 27"))?
-                            .as_str()
-                            .unwrap()
-                            .to_string(),
-                    );
+            let j = resp.pointer("/data").ok_or(anyhow!("gv err k1"))?;
+            let mut videos = HashMap::new();
+            let mut audios = HashMap::new();
+            for ele in j.pointer("/dash/video").ok_or(anyhow!("gv err k2"))?.as_array().unwrap() {
+                let mut id = ele.pointer("/id").ok_or(anyhow!("gv err k3"))?.as_u64().unwrap() * 10;
+                if ele.pointer("/codecid").ok_or(anyhow!("gv err k31"))?.as_u64().eq(&Some(7)) {
+                    id += 1;
                 }
-            } else {
-                let videos = j.pointer("/durl").ok_or(anyhow!("get_video pje 28"))?.as_array().unwrap();
-                for v in videos {
-                    ret.push(v.pointer("url").ok_or(anyhow!("get_video pje 29"))?.as_str().unwrap().to_string());
-                }
+                videos.insert(
+                    id,
+                    ele.pointer("/base_url").ok_or(anyhow!("gv err k4"))?.as_str().unwrap(),
+                );
             }
+            for ele in j.pointer("/dash/audio").ok_or(anyhow!("gv err k5"))?.as_array().unwrap() {
+                audios.insert(
+                    ele.pointer("/id").ok_or(anyhow!("gv err k6"))?.as_u64().unwrap(),
+                    ele.pointer("/base_url").ok_or(anyhow!("gv err k7"))?.as_str().unwrap(),
+                );
+            }
+            if let Some(ele) = j.pointer("/dash/flac/audio") {
+                audios.insert(
+                    ele.pointer("/id").ok_or(anyhow!("gv err l1"))?.as_u64().unwrap() + 100,
+                    ele.pointer("/base_url").ok_or(anyhow!("gv err l2"))?.as_str().unwrap(),
+                );
+            }
+            ret.push(videos.iter().max_by_key(|x| x.0).unwrap().1.to_string());
+            ret.push(audios.iter().max_by_key(|x| x.0).unwrap().1.to_string());
         }
         Ok(ret)
     }
