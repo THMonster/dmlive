@@ -1,5 +1,3 @@
-use std::ops::Deref;
-
 pub struct CmdParser {
     pub restart: bool,
     pub next: bool,
@@ -48,27 +46,27 @@ impl CmdParser {
                 }
                 let subcmds: Vec<&str> = cmd.split('=').collect();
                 let mut iter = subcmds.iter();
-                let arg1 = iter.next().unwrap_or(&"").deref();
+                let arg1 = *iter.next().unwrap_or(&"");
                 if arg1.eq("fs") {
-                    let arg2 = iter.next().unwrap_or(&"").deref();
+                    let arg2 = *iter.next().unwrap_or(&"");
                     fs = match arg2.parse::<f64>() {
                         Ok(it) => Some(it),
                         Err(_) => None,
                     };
                 } else if arg1.eq("fa") {
-                    let arg2 = iter.next().unwrap_or(&"").deref();
+                    let arg2 = *iter.next().unwrap_or(&"");
                     fa = match arg2.parse::<f64>() {
                         Ok(it) => Some(it),
                         Err(_) => None,
                     };
                 } else if arg1.eq("speed") {
-                    let arg2 = iter.next().unwrap_or(&"").deref();
+                    let arg2 = *iter.next().unwrap_or(&"");
                     speed = match arg2.parse::<u64>() {
                         Ok(it) => Some(it),
                         Err(_) => None,
                     };
                 } else if arg1.eq("p") || arg1.eq("page") {
-                    let arg2 = iter.next().unwrap_or(&"").deref();
+                    let arg2 = *iter.next().unwrap_or(&"");
                     page = match arg2.parse::<u64>() {
                         Ok(it) => Some(it),
                         Err(_) => None,
