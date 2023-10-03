@@ -1,16 +1,25 @@
-use crate::{config::ConfigManager, dmlive::DMLMessage, ipcmanager::DMLStream};
-use futures::pin_mut;
+use crate::{config::ConfigManager, dmlive::DMLMessage, ipcmanager::DMLStream, streamer::segment::SegmentStream};
 use log::info;
 use reqwest::Client;
 use std::{
-    collections::{HashSet, LinkedList},
-    convert::TryInto,
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
+    ops::Not,
     sync::Arc,
 };
-use tokio::{io::AsyncWriteExt, sync::mpsc::Sender};
+use tokio::{io::AsyncWriteExt, sync::mpsc::Receiver};
+
+#[derive(Debug)]
+pub struct M3U8 {
+    sequence: u64,
+    props: HashMap<String, Vec<String>>,
+    hearder: String,
+    clips: VecDeque<String>,
+}
 
 pub struct HLS {
     url: String,
+    header: RefCell<Vec<u8>>,
     ipc_manager: Arc<crate::ipcmanager::IPCManager>,
     cm: Arc<ConfigManager>,
     mtx: async_channel::Sender<DMLMessage>,
@@ -18,9 +27,7 @@ pub struct HLS {
 
 impl HLS {
     pub fn new(
-        url: String,
-        cm: Arc<ConfigManager>,
-        im: Arc<crate::ipcmanager::IPCManager>,
+        url: String, cm: Arc<ConfigManager>, im: Arc<crate::ipcmanager::IPCManager>,
         mtx: async_channel::Sender<DMLMessage>,
     ) -> Self {
         HLS {
@@ -28,156 +35,131 @@ impl HLS {
             ipc_manager: im,
             cm,
             mtx,
+            header: RefCell::new(Vec::new()),
         }
     }
 
-    async fn decode_m3u8(
-        m3u8: &str,
-        old_urls: &mut HashSet<String>,
-    ) -> Result<LinkedList<String>, Box<dyn std::error::Error>> {
-        let lines: Vec<_> = m3u8.split('\n').collect();
-        let mut sq = None;
-        let mut urls = LinkedList::new();
-        let mut i = 0;
-        while i < lines.len() {
-            if lines[i].starts_with("#EXT-X-MEDIA-SEQUENCE") {
-                let re = regex::Regex::new(r#"#EXT-X-MEDIA-SEQUENCE: *([0-9]+)"#).unwrap();
-                let t: u64 = re.captures(lines[i]).ok_or("decode m3u8 err 1")?[1].parse()?;
-                sq = Some(t);
-            }
-            if !lines[i].starts_with('#') && !lines[i].trim().is_empty() {
-                urls.push_back(lines[i]);
-            }
-            i += 1;
-        }
-        if sq.is_none() || urls.is_empty() {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "decode m3u8 failed",
-            )));
-        }
-        let sq = sq.unwrap();
-        let mut ret = LinkedList::new();
-        if old_urls.is_empty() && sq != 0 {
-            let u = urls.pop_back().unwrap();
-            ret.push_front(u.to_owned());
-            info!("{}, {:?}", m3u8, &ret);
-        } else {
-            while !urls.is_empty() {
-                let u = urls.pop_back().unwrap();
-                if old_urls.contains(u) {
-                    old_urls.clear();
-                    old_urls.insert(u.to_string());
-                    break;
-                } else {
-                    ret.push_front(u.to_owned());
-                }
-            }
-            while !urls.is_empty() {
-                let u = urls.pop_back().unwrap();
-                old_urls.insert(u.to_string());
-            }
-        }
-        info!("hls: m3u8 sq: {}, new ts seg: {}", sq, ret.len());
-        Ok(ret)
-    }
-
-    async fn download_m3u8(
-        self: &Arc<Self>,
-        tx: Sender<String>,
-        client: Arc<Client>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut old_urls = HashSet::new();
-        let mut interval: u64 = 1500;
-        let mut m3u8_retry = 3u8;
-        loop {
-            let now = std::time::Instant::now();
-            let mut urls = match client.get(&self.url).header("Connection", "keep-alive").send().await {
-                Ok(it) => {
-                    m3u8_retry = 3;
-                    let resp = it.text().await?;
-                    Self::decode_m3u8(&resp, &mut old_urls).await?
-                }
-                Err(e) => {
-                    if m3u8_retry > 0 {
-                        m3u8_retry = m3u8_retry.saturating_sub(1);
-                        continue;
+    pub fn decode_m3u8(m3u8_text: &str) -> anyhow::Result<M3U8> {
+        let mut lines = m3u8_text.lines();
+        let mut sq = 0u64;
+        let mut header = "".to_string();
+        let mut m3u8_props = HashMap::new();
+        let mut m3u8_clips = VecDeque::new();
+        while let Some(line) = lines.next() {
+            let line = line.trim();
+            if line.starts_with("#") {
+                if let Some((k, v)) = line.strip_prefix("#").unwrap().split_once(":") {
+                    let k = k.trim();
+                    let v = v.trim();
+                    if k.eq("EXT-X-MEDIA-SEQUENCE") {
+                        sq = v.parse().unwrap_or(0);
+                    } else if k.eq("EXT-X-MAP") {
+                        let (_, h) = v.split_once("=").unwrap_or(("", ""));
+                        let h = h.trim().strip_prefix('"').and_then(|it| it.strip_suffix('"')).unwrap_or("").trim();
+                        header.clear();
+                        header.push_str(h);
                     } else {
-                        return Err(e.into());
+                        m3u8_props
+                            .entry(k.to_string())
+                            .and_modify(|it: &mut Vec<String>| it.push(v.to_string()))
+                            .or_insert(Vec::new());
                     }
                 }
-            };
-            info!("hls: interval: {}", interval);
-            // info!("hls: {:?}", &url_fifo);
-
-            let urls_len = urls.len();
-            if urls_len > 1 {
-                interval = interval.saturating_sub(100);
-                if interval < 500 {
-                    interval = 500;
-                }
-            } else if urls_len < 1 {
-                interval += 100;
-            }
-
-            // old_urls.clear();
-            while !urls.is_empty() {
-                let u = urls.pop_front().unwrap();
-                tx.send(u.clone()).await?;
-                old_urls.insert(u);
-            }
-
-            if true {
-                let elapsed: u64 = now.elapsed().as_millis().try_into()?;
-                if elapsed < interval {
-                    let sleep_time = interval - elapsed;
-                    // info!("v sleep: {}", &sleep_time);
-                    tokio::time::sleep(tokio::time::Duration::from_millis(sleep_time)).await;
+            } else {
+                if line.is_empty().not() {
+                    m3u8_clips.push_back(line.to_owned());
                 }
             }
         }
+        let m3u8 = M3U8 {
+            sequence: sq,
+            props: m3u8_props,
+            clips: m3u8_clips,
+            hearder: header,
+        };
+        // info!("hls: m3u8 data {:?}", &m3u8);
+        Ok(m3u8)
     }
 
-    async fn download(self: &Arc<Self>, mut stream: Box<dyn DMLStream>) -> Result<(), Box<dyn std::error::Error>> {
-        // let mut sq = 0;
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(30);
-        let client = reqwest::Client::builder()
-            .user_agent(crate::utils::gen_ua())
-            .timeout(tokio::time::Duration::from_secs(15))
-            .build()?;
-        let client = Arc::new(client);
-        let client1 = client.clone();
-        let s1 = self.clone();
-        let m3u8_task = async move {
-            match s1.download_m3u8(tx, client1).await {
-                Ok(_) => {}
-                Err(err) => {
-                    info!("hls download m3u8 error: {:?}", err);
-                }
-            }
+    fn parse_clip_url(&self, clip: &str) -> anyhow::Result<String> {
+        let url = if clip.starts_with("http") {
+            clip.to_string()
+        } else {
+            let url = url::Url::parse(&self.url)?;
+            let url2 = url.join(&clip)?;
+            format!("{}?{}", url2.as_str(), url.query().unwrap_or(""))
         };
-        let ts_task = async move {
-            while let Some(u) = rx.recv().await {
-                let mut resp = client.get(u).header("Connection", "keep-alive").send().await?;
-                while let Some(chunk) = resp.chunk().await? {
-                    stream.write_all(&chunk).await?;
-                }
+        Ok(url)
+    }
+
+    async fn download_header(&self, client: &Client, header_url: &str) -> anyhow::Result<()> {
+        let url = self.parse_clip_url(&header_url)?;
+        let mut resp = client.get(url).header("Connection", "keep-alive").send().await?;
+        while let Some(chunk) = resp.chunk().await? {
+            self.header.borrow_mut().write_all(&chunk).await?;
+        }
+        info!("hls: header length: {}", self.header.borrow().len());
+        Ok(())
+    }
+
+    async fn download_task(
+        &self, client: &Client, mut stream: Box<dyn DMLStream>, mut clip_rx: Receiver<String>,
+    ) -> anyhow::Result<()> {
+        let mut header_done = false;
+        while let Some(clip) = clip_rx.recv().await {
+            let url = self.parse_clip_url(&clip)?;
+            // info!("hls: clip url: {}, m3u8 url: {}", &url, &self.url);
+            info!("hls: clip: {}", &clip);
+            let mut resp = client.get(url).header("Connection", "keep-alive").send().await?;
+            if header_done.not() && self.header.borrow().is_empty().not() {
+                stream.write_all(&self.header.borrow()).await?;
+                header_done = true;
             }
-            Ok::<(), Box<dyn std::error::Error>>(())
-        };
-        pin_mut!(m3u8_task);
-        pin_mut!(ts_task);
-        let _ = futures::future::select(m3u8_task, ts_task).await;
+            while let Some(chunk) = resp.chunk().await? {
+                stream.write_all(&chunk).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn refresh_m3u8_task(
+        &self, mut refresh_rx: Receiver<bool>, client: &Client, ss: &SegmentStream,
+    ) -> anyhow::Result<()> {
+        let mut header_done = false;
+        while let Some(_) = refresh_rx.recv().await {
+            let resp = client
+                .get(&self.url)
+                .header("Connection", "keep-alive")
+                .header("X-Forwarded-For", "::1")
+                .send()
+                .await?;
+            let m3u8_text = resp.text().await?;
+            let m3u8 = Self::decode_m3u8(&m3u8_text)?;
+            if header_done.not() && m3u8.hearder.is_empty().not() {
+                self.download_header(client, &m3u8.hearder).await?;
+                header_done = true;
+            }
+            ss.update_sequence(m3u8.sequence, m3u8.clips).await?;
+        }
         Ok(())
     }
 
     pub async fn run(self: &Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
-        match self.download(self.ipc_manager.get_stream_socket().await?).await {
-            Ok(it) => it,
-            Err(err) => {
-                info!("hls download error: {:?}", err);
-            }
-        };
+        let client = reqwest::Client::builder()
+            .user_agent(crate::utils::gen_ua())
+            .timeout(tokio::time::Duration::from_secs(15))
+            .build()?;
+        let (tx, rx) = tokio::sync::mpsc::channel(10);
+        let (tx1, rx1) = tokio::sync::mpsc::channel(5);
+        let seg_stream = SegmentStream::new(tx);
+        // let  file = tokio::fs::File::create("/tmp/aaa.m4s").await?;
+        // let file = Box::new(file);
+        tokio::select! {
+            it = self.refresh_m3u8_task(rx1, &client, &seg_stream) => { it?; },
+            it = self.download_task(&client, self.ipc_manager.get_stream_socket().await?, rx) => { it?; },
+            // it = self.download_task(&client, file, rx) => { it?; },
+            it = seg_stream.run(tx1) => { it?; },
+        }
         info!("hls streamer exit");
         Ok(())
     }

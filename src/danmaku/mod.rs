@@ -7,31 +7,16 @@ mod mkv_header;
 mod twitch;
 mod youtube;
 
-use crate::{
-    config::ConfigManager,
-    dmlive::DMLMessage,
-    ipcmanager::DMLStream,
-};
+use crate::{config::ConfigManager, dmlive::DMLMessage, ipcmanager::DMLStream};
 use anyhow::anyhow;
 use anyhow::Result;
 use async_channel::Sender;
-use chrono::{
-    Duration,
-    NaiveTime,
-};
+use chrono::{Duration, NaiveTime};
 use log::info;
 use log::warn;
 use std::rc::Rc;
-use std::{
-    collections::BTreeMap,
-    ops::BitXorAssign,
-    sync::Arc,
-};
-use tokio::{
-    io::AsyncWriteExt,
-    sync::RwLock,
-    task::spawn_local,
-};
+use std::{collections::BTreeMap, ops::BitXorAssign, sync::Arc};
+use tokio::{io::AsyncWriteExt, sync::RwLock, task::spawn_local};
 
 #[derive(Clone, Debug)]
 struct DanmakuChannel {
@@ -95,10 +80,7 @@ impl Danmaku {
     }
 
     async fn get_avail_danmaku_channel(
-        &self,
-        c_pts: usize,
-        len: usize,
-        channels: &mut [DanmakuChannel],
+        &self, c_pts: usize, len: usize, channels: &mut [DanmakuChannel],
     ) -> Option<usize> {
         let s = (1920.0 + len as f64) / *self.cm.danmaku_speed.read().await as f64;
         for (i, c) in channels.iter_mut().enumerate() {
@@ -152,23 +134,18 @@ impl Danmaku {
     }
 
     async fn launch_danmaku(
-        &self,
-        c: &str,
-        n: &str,
-        d: &str,
-        c_pts: usize,
-        ratio_scale: f64,
-        channels: &mut [DanmakuChannel],
-        read_order: &mut usize,
-        socket: &mut Box<dyn DMLStream>,
+        &self, c: &str, n: &str, d: &str, c_pts: u64, ratio_scale: f64, channels: &mut [DanmakuChannel],
+        read_order: &mut usize, socket: &mut Box<dyn DMLStream>,
     ) -> Result<()> {
         let cluster = if n.trim().is_empty() {
             let ass = format!(r#"{},0,Default,dmlive-empty,20,20,2,,"#, *read_order,).into_bytes();
             mkv_header::DMKVCluster::new(ass, c_pts, 1)
         } else {
             let display_length = self.get_danmaku_display_length(n, d, ratio_scale).await;
-            let avail_dc =
-                self.get_avail_danmaku_channel(c_pts, display_length, channels).await.ok_or(anyhow!("ld err 1"))?;
+            let avail_dc = self
+                .get_avail_danmaku_channel(c_pts as usize, display_length, channels)
+                .await
+                .ok_or(anyhow!("ld err 1"))?;
             let ass = format!(
                 r#"{4},0,Default,{5},0,0,0,,{{\alpha{0}\fs{7}\1c&{6}&\move(1920,{1},{2},{1})}}{8}{9}{3}"#,
                 format_args!("{:02x}", (*self.cm.font_alpha.read().await * 255_f64) as u8),
@@ -183,7 +160,7 @@ impl Danmaku {
                 if *self.show_nick.read().await { ": " } else { "" },
             )
             .into_bytes();
-            mkv_header::DMKVCluster::new(ass, c_pts, *self.cm.danmaku_speed.read().await as usize)
+            mkv_header::DMKVCluster::new(ass, c_pts, *self.cm.danmaku_speed.read().await)
         };
         *read_order = read_order.saturating_add(1);
         match cluster.write_to_socket(socket).await {
@@ -199,8 +176,7 @@ impl Danmaku {
     }
 
     pub async fn run_danmaku_client(
-        self: &Arc<Self>,
-        dtx: async_channel::Sender<(String, String, String)>,
+        self: &Arc<Self>, dtx: async_channel::Sender<(String, String, String)>,
     ) -> Result<()> {
         loop {
             match match self.cm.site {
@@ -366,7 +342,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         Ok(())
     }
 
-    pub async fn run(self: &Arc<Self>, ratio_scale: f64) -> Result<()> {
+    pub async fn run(self: &Arc<Self>, ratio_scale: f64, _start_pts: u64) -> Result<()> {
         let now = std::time::Instant::now();
         self.init().await;
         let mut socket = self.ipc_manager.get_danmaku_socket().await?;
@@ -395,7 +371,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     "",
                     "",
                     "",
-                    now.elapsed().as_millis() as usize,
+                    now.elapsed().as_millis() as u64,
                     ratio_scale,
                     &mut dchannels,
                     &mut read_order,
@@ -419,7 +395,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                             &c,
                             &n,
                             &d,
-                            now.elapsed().as_millis() as usize,
+                            now.elapsed().as_millis() as u64,
                             ratio_scale,
                             &mut dchannels,
                             &mut read_order,
@@ -437,7 +413,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                                     "",
                                     "",
                                     "",
-                                    now.elapsed().as_millis() as usize,
+                                    now.elapsed().as_millis() as u64,
                                     ratio_scale,
                                     &mut dchannels,
                                     &mut read_order,
@@ -457,7 +433,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         "",
                         "",
                         "",
-                        now.elapsed().as_millis() as usize,
+                        now.elapsed().as_millis() as u64,
                         ratio_scale,
                         &mut dchannels,
                         &mut read_order,

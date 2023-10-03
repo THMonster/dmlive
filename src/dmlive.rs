@@ -1,18 +1,10 @@
 use crate::{
-    config::ConfigManager,
-    danmaku::Danmaku,
-    ffmpeg::FfmpegControl,
-    ipcmanager::IPCManager,
-    mpv::MpvControl,
-    streamer::Streamer,
-    streamfinder::StreamFinder,
+    config::ConfigManager, danmaku::Danmaku, ffmpeg::FfmpegControl, ipcmanager::IPCManager, mpv::MpvControl,
+    streamer::Streamer, streamfinder::StreamFinder,
 };
 use async_channel::Receiver;
-use log::info;
-use std::{
-    ops::Deref,
-    sync::Arc,
-};
+use log::{info, warn};
+use std::{ops::Deref, sync::Arc};
 use tokio::sync::RwLock;
 
 pub enum DMLMessage {
@@ -20,7 +12,7 @@ pub enum DMLMessage {
     SetFontAlpha(f64),
     SetDMSpeed(u64),
     GoToBVPage(usize),
-    SetVideoRes((u64, u64)),
+    SetVideoInfo((u64, u64, u64)),
     ToggleShowNick,
     RequestRestart,
     RequestExit,
@@ -109,14 +101,15 @@ impl DMLive {
                 DMLMessage::RequestExit => {
                     self.quit().await;
                 }
-                DMLMessage::SetVideoRes((w, h)) => {
+                DMLMessage::SetVideoInfo((w, h, pts)) => {
+                    info!("video info: w {} h {} pts {}", w, h, pts);
                     let s1 = self.clone();
                     // danmaku task
                     tokio::task::spawn_local(async move {
                         if matches!(s1.cm.site, crate::config::Site::BiliVideo) {
                             let _ = s1.dm.run_bilivideo(16.0 * h as f64 / w as f64 / 9.0).await;
                         } else {
-                            let _ = s1.dm.run(16.0 * h as f64 / w as f64 / 9.0).await;
+                            let _ = s1.dm.run(16.0 * h as f64 / w as f64 / 9.0, pts).await;
                         }
                     });
                 }
@@ -175,7 +168,7 @@ impl DMLive {
         tokio::task::spawn_local(async move {
             if !matches!(s3.cm.site, crate::config::Site::BiliVideo) {
                 let _ = s3.st.run(urls).await;
-                let _ = s3.fc.quit().await;
+                let _ = s3.fc.quit_new().await;
             }
         });
     }

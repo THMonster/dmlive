@@ -2,7 +2,10 @@ use anyhow::anyhow;
 use anyhow::Result;
 use log::info;
 use log::warn;
+use std::cell::RefCell;
 use std::sync::Arc;
+use tokio::io::AsyncRead;
+use tokio::process::ChildStdin;
 use tokio::sync::oneshot;
 use tokio::task::spawn_local;
 use tokio::time::timeout;
@@ -12,35 +15,36 @@ use tokio::{
     sync::RwLock,
 };
 
+use crate::utils;
 use crate::{config::ConfigManager, dmlive::DMLMessage};
 
 pub struct FfmpegControl {
     ipc_manager: Arc<crate::ipcmanager::IPCManager>,
     cm: Arc<ConfigManager>,
     ff_command_tx: RwLock<Option<oneshot::Sender<bool>>>,
+    ff_stdin: RefCell<Option<ChildStdin>>,
     mtx: async_channel::Sender<DMLMessage>,
 }
 impl FfmpegControl {
     pub fn new(
-        cm: Arc<ConfigManager>,
-        im: Arc<crate::ipcmanager::IPCManager>,
-        mtx: async_channel::Sender<DMLMessage>,
+        cm: Arc<ConfigManager>, im: Arc<crate::ipcmanager::IPCManager>, mtx: async_channel::Sender<DMLMessage>,
     ) -> Self {
         Self {
             ipc_manager: im,
             cm,
             ff_command_tx: RwLock::new(None),
             mtx,
+            ff_stdin: RefCell::new(None),
         }
     }
 
-    async fn run_write_record_task(&self, title: String) -> tokio::task::JoinHandle<()> {
+    async fn run_write_record_task(&self, title: String) -> Result<()> {
         let in_stream = self.ipc_manager.get_f2m_socket_path();
         let max_len = match title.char_indices().nth(70) {
             Some(it) => it.0,
             None => title.len(),
         };
-        spawn_local(async move {
+        let _ = spawn_local(async move {
             let now = chrono::Local::now();
             let filename = format!(
                 "{} - {}.mkv",
@@ -77,6 +81,8 @@ impl FfmpegControl {
                 }
             }
         })
+        .await;
+        Ok(())
     }
 
     pub async fn create_ff_command(&self, title: &str, rurl: &Vec<String>) -> Result<Command> {
@@ -118,11 +124,11 @@ impl FfmpegControl {
             }
         }
         ret.args(&["-c", "copy"]);
-        if matches!(stream_type, crate::config::StreamType::HLS) {
+        if matches!(self.cm.site, crate::config::Site::TwitchLive) {
             ret.args(&["-c:a", "pcm_s16le"]);
         }
         ret.args(&["-metadata", format!("title={}", &title).as_str(), "-f", "matroska"]);
-        ret.args(&["-reserve_index_space", " 1024000"]);
+        // ret.args(&["-reserve_index_space", " 1024000"]);
         match self.cm.run_mode {
             crate::config::RunMode::Play => {
                 ret.arg("-listen").arg("1").arg(self.ipc_manager.get_f2m_socket_path());
@@ -149,6 +155,64 @@ impl FfmpegControl {
         Ok(())
     }
 
+    pub async fn quit_new(&self) -> Result<()> {
+        info!("close ffmpeg");
+        let _ = self
+            .ff_stdin
+            .borrow_mut()
+            .take()
+            .ok_or(anyhow!("ffmpeg stdin not found"))?
+            .write_all("q\n".as_bytes())
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_video_info<T: AsyncRead + Unpin>(&self, ffstderr: T) -> Result<()> {
+        let mut duration = 0u64;
+        let mut start = 0u64;
+        let mut reader = tokio::io::BufReader::new(ffstderr).lines();
+        let res_re = regex::Regex::new(r#"Stream #[0-9].+? Video:.*?\D(\d{3,5})x(\d{2,5})\D.*"#).unwrap();
+        let pts_re = regex::Regex::new(r#"Duration: ([^,\s]+),\s+(start: ([0-9.]+))*.+"#).unwrap();
+        let mut has_sent = false;
+        while let Some(line) = reader.next_line().await.unwrap_or(None) {
+            info!("{}", &line);
+            let line = line.trim();
+            match pts_re.captures(&line) {
+                Some(it) => {
+                    duration = utils::str_to_ms(&it[1]);
+                    let st: f64 = it.get(3).map_or("0", |it| it.as_str()).parse().unwrap_or(0.0);
+                    start = (st * 1000.0) as u64;
+                    continue;
+                }
+                None => {}
+            }
+            match res_re.captures(&line) {
+                Some(it) => {
+                    let w = it[1].parse().unwrap();
+                    let h = it[2].parse().unwrap();
+                    if w < 100 || h < 100 {
+                        let _ = self.quit_new().await;
+                    }
+                    if has_sent == false {
+                        let _ = self
+                            .mtx
+                            .send(DMLMessage::SetVideoInfo((
+                                w,
+                                h,
+                                if start != 0 { start } else { duration },
+                            )))
+                            .await;
+                        has_sent = true;
+                    }
+                }
+                None => {}
+            }
+        }
+        // warn!("get video info failed!");
+        let _ = self.quit_new().await;
+        Ok(())
+    }
+
     pub async fn run(self: &Arc<Self>, title: &str, rurl: &Vec<String>) -> Result<()> {
         let mut ff = self
             .create_ff_command(title, rurl)
@@ -158,70 +222,22 @@ impl FfmpegControl {
             .kill_on_drop(false)
             .spawn()
             .unwrap();
-        let mut ffstdin = ff.stdin.take().unwrap();
+        let ffstdin = ff.stdin.take().unwrap();
         let ffstderr = ff.stderr.take().unwrap();
-        let (tx, rx) = oneshot::channel();
-        *self.ff_command_tx.write().await = Some(tx);
-        tokio::task::spawn_local(async move {
-            match rx.await {
-                Ok(_) => {
-                    info!("close ffmpeg");
-                    let _ = ffstdin.write_all("q\n".as_bytes()).await;
-                }
-                Err(_) => {}
-            }
-        });
+        // *self.ff_command_tx.write().await = Some(tx);
+        *self.ff_stdin.borrow_mut() = Some(ffstdin);
 
-        let s1 = self.clone();
-        tokio::task::spawn_local(async move {
-            let mut reader = tokio::io::BufReader::new(ffstderr).lines();
-            let s11 = s1.clone();
-            match timeout(tokio::time::Duration::from_secs(10), async move {
-                let res_re = regex::Regex::new(r#"Stream #[0-9].+? Video:.*?\D(\d{3,5})x(\d{2,5})\D.*"#).unwrap();
-                while let Some(line) = reader.next_line().await.unwrap_or(None) {
-                    info!("{}", &line);
-                    match res_re.captures(&line) {
-                        Some(it) => {
-                            info!("{}", &line);
-                            let w = it[1].parse().unwrap();
-                            let h = it[2].parse().unwrap();
-                            if w < 100 || h < 100 {
-                                let _ = s11.quit().await;
-                            }
-                            let _ = s11.mtx.send(DMLMessage::SetVideoRes((w, h))).await;
-                            return;
-                        }
-                        None => {}
+        let write_record_task = async {
+            match self.cm.run_mode {
+                crate::config::RunMode::Play => {}
+                crate::config::RunMode::Record => {
+                    if self.cm.http_address.is_none() {
+                        let _ = self.run_write_record_task(title.into()).await;
                     }
                 }
-            })
-            .await
-            {
-                Ok(_) => {}
-                Err(_) => {
-                    warn!("set video resolution failed!");
-                    let _ = s1.quit().await;
-                }
             }
-        });
-
-        let mut write_record_task: Option<tokio::task::JoinHandle<()>> = None;
-        match self.cm.run_mode {
-            crate::config::RunMode::Play => {}
-            crate::config::RunMode::Record => {
-                if self.cm.http_address.is_none() {
-                    write_record_task = Some(self.run_write_record_task(title.into()).await);
-                }
-            }
-        }
-        ff.wait().await?;
-        match write_record_task {
-            Some(it) => {
-                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-                it.abort()
-            }
-            None => {}
-        }
+        };
+        let _ = tokio::join!(ff.wait(), self.get_video_info(ffstderr), write_record_task);
         Ok(())
     }
 }

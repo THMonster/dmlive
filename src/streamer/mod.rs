@@ -1,6 +1,7 @@
 pub mod flv;
 pub mod hls;
 pub mod youtube;
+pub mod segment;
 
 use crate::{
     config::{ConfigManager, StreamType},

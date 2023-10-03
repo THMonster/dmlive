@@ -131,7 +131,7 @@ impl MpvControl {
                 let w = j.pointer("/data/w").ok_or(anyhow!("hme err a1"))?.as_u64().unwrap();
                 let h = j.pointer("/data/h").ok_or(anyhow!("hme err a2"))?.as_u64().unwrap();
                 if matches!(self.cm.site, crate::config::Site::BiliVideo) {
-                    let _ = self.mtx.send(DMLMessage::SetVideoRes((w, h))).await;
+                    let _ = self.mtx.send(DMLMessage::SetVideoInfo((w, h, 0))).await;
                     self.mpv_command_tx
                         .send(
                             r#"{ "command": ["sub-remove", "1"], "async": true }

@@ -95,14 +95,14 @@ pub struct DMKVCluster {
 }
 
 impl DMKVCluster {
-    pub fn new(ass: Vec<u8>, ts: usize, speed: usize) -> Self {
+    pub fn new(ass: Vec<u8>, ts: u64, speed: u64) -> Self {
         let ass_len = ass.len();
         Self {
             cluster_id: 0x1f43b675,
             cluster_size: (ass_len + 30) as u64 | 0x0100_0000_0000_0000,
             timestamp_id: 0xe7,
             timestamp_size: 0x88,
-            timestamp: ts as u64,
+            timestamp: ts,
             block_group_id: 0xa0,
             block_group_size: (ass_len + 15) as u32 | 0x1000_0000u32,
             block_id: 0xa1,

@@ -4,31 +4,19 @@ use anyhow::anyhow;
 use anyhow::Result;
 use async_channel::Receiver;
 use futures::{
-    future::{
-        select_ok,
-        AbortHandle,
-        Abortable,
-    },
+    future::{select_ok, AbortHandle, Abortable},
     Future,
 };
 use tokio::{
-    io::{
-        AsyncRead,
-        AsyncWrite,
-    },
-    net::{
-        TcpListener,
-        UnixListener,
-    },
+    io::{AsyncRead, AsyncWrite},
+    net::{TcpListener, UnixListener},
 };
 use uuid::Uuid;
 
 use crate::config::ConfigManager;
 
 pub trait DMLStream: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
-impl<T> DMLStream for T where T: AsyncRead + AsyncWrite + Send + Sync + Unpin
-{
-}
+impl<T> DMLStream for T where T: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
 
 pub struct IPCManager {
     pub is_dash: bool,
@@ -79,7 +67,7 @@ impl IPCManager {
                 &self.base_socket_dir, &self.base_uuid
             ))
             .await?;
-            if !self.is_dash {
+            if false {
                 tokio::fs::remove_file(format!(
                     "{}/dml-{}-s",
                     &self.base_socket_dir, &self.base_uuid
@@ -103,11 +91,11 @@ impl IPCManager {
         let (tx, rx) = async_channel::bounded(1);
         self.danmaku_socket_rx = Some(rx);
         let danmaku_socket_task = async move {
-            while let std::result::Result::Ok((s, _)) = dml.accept().await {
+            while let Ok((s, _)) = dml.accept().await {
                 tx.send(Box::new(s)).await?;
             }
-            // anyhow::Ok::<()>(())
-            Ok::<(), _>(())
+            anyhow::Ok(())
+            // Ok::<(), _>(())
         };
         tasks.push(Box::pin(danmaku_socket_task));
         if self.is_dash {
@@ -116,10 +104,10 @@ impl IPCManager {
             let (tx, rx) = async_channel::bounded(1);
             self.dashv_socket_rx = Some(rx);
             let dashv_socket_task = async move {
-                while let std::result::Result::Ok((s, _)) = vl.accept().await {
+                while let Ok((s, _)) = vl.accept().await {
                     tx.send(Box::new(s)).await?;
                 }
-                anyhow::Ok::<()>(())
+                anyhow::Ok(())
             };
             tasks.push(Box::pin(dashv_socket_task));
 
@@ -131,21 +119,19 @@ impl IPCManager {
                 while let Ok((s, _)) = al.accept().await {
                     tx.send(Box::new(s)).await?;
                 }
-                anyhow::Ok::<()>(())
+                anyhow::Ok(())
             };
             tasks.push(Box::pin(dasha_socket_task));
         } else {
-            let sl = UnixListener::bind(format!(
-                "{}/dml-{}-s",
-                &self.base_socket_dir, &self.base_uuid
-            ))?;
+            let (sl, p) = Self::get_tcp_listener().await;
+            self.stream_port = p;
             let (tx, rx) = async_channel::bounded(1);
             self.stream_socket_rx = Some(rx);
             let stream_socket_task = async move {
                 while let Ok((s, _)) = sl.accept().await {
                     tx.send(Box::new(s)).await?;
                 }
-                anyhow::Ok::<()>(())
+                anyhow::Ok(())
             };
             tasks.push(Box::pin(stream_socket_task));
         }
@@ -262,7 +248,8 @@ impl IPCManager {
 
     pub fn get_stream_socket_path(&self) -> String {
         if self.plat == 0 {
-            format!("unix://{}/dml-{}-s", &self.base_socket_dir, &self.base_uuid)
+            // format!("unix://{}/dml-{}-s", &self.base_socket_dir, &self.base_uuid)
+            format!("tcp://127.0.0.1:{}", &self.stream_port)
         } else {
             format!("tcp://127.0.0.1:{}", &self.stream_port)
         }

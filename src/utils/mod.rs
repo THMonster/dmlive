@@ -2,10 +2,7 @@ pub mod cookies;
 
 use log::info;
 use tokio::{
-    io::{
-        AsyncBufReadExt,
-        AsyncWriteExt,
-    },
+    io::{AsyncBufReadExt, AsyncWriteExt},
     process::Command,
 };
 
@@ -95,4 +92,26 @@ pub fn rs(a: u64, ary: &[u8]) -> Vec<u8> {
 
 pub fn nm(a: u64, ary: u64) -> Vec<u8> {
     tp(0, a, &vn(ary))
+}
+
+pub fn str_to_ms(time_str: &str) -> u64 {
+    let mut t = time_str.trim().rsplit(':');
+    let mut ret = 0f64;
+    let mut i = 0usize;
+    while let Some(it) = t.next() {
+        if i == 0 {
+            let s: f64 = it.parse().unwrap_or(0.0);
+            ret += s;
+        } else if i == 1 {
+            let m: f64 = it.parse().unwrap_or(0.0);
+            ret += m * 60.0;
+        } else if i == 2 {
+            let h: f64 = it.parse().unwrap_or(0.0);
+            ret += h * 60.0 * 60.0;
+        } else {
+            break;
+        }
+        i = i.saturating_add(1);
+    }
+    (ret * 1000.0) as u64
 }
