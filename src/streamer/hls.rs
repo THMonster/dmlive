@@ -87,7 +87,11 @@ impl HLS {
         } else {
             let url = url::Url::parse(&self.url)?;
             let url2 = url.join(&clip)?;
-            format!("{}?{}", url2.as_str(), url.query().unwrap_or(""))
+            if url2.as_str().contains("?") {
+                url2.as_str().to_string()
+            } else {
+                format!("{}?{}", url2.as_str(), url.query().unwrap_or(""))
+            }
         };
         Ok(url)
     }

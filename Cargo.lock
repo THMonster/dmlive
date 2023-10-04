@@ -515,7 +515,7 @@ dependencies = [
 
 [[package]]
 name = "dmlive"
-version = "5.3.0"
+version = "5.3.2"
 dependencies = [
  "aes",
  "anyhow",
