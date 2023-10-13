@@ -1,26 +1,26 @@
+use crate::dmlerr;
 use regex::Regex;
 use std::collections::HashMap;
 use url::Url;
 
+const TTV_API1: &'static str = "https://gql.twitch.tv/gql";
+const TTV_API2: &'static str = "https://usher.ttvnw.net/api/channel/hls/{channel}.m3u8";
+
 pub struct Twitch {
-    api1: String,
-    api2: String,
 }
 
 impl Twitch {
     pub fn new() -> Self {
-        Twitch {
-            api1: "https://gql.twitch.tv/gql".to_owned(),
-            api2: "https://usher.ttvnw.net/api/channel/hls/{channel}.m3u8".to_owned(),
+        Self {
         }
     }
 
     pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<String, String>> {
         let rid = Url::parse(room_url)?
             .path_segments()
-            .ok_or(anyhow::anyhow!("rid parse error 1"))?
+            .ok_or_else(|| dmlerr!())?
             .last()
-            .ok_or(anyhow::anyhow!("rid parse error 2"))?
+            .ok_or_else(|| dmlerr!())?
             .to_string();
         let client = reqwest::Client::new();
         let mut ret = HashMap::new();
@@ -36,11 +36,7 @@ impl Twitch {
         let re = Regex::new(r#""BroadcastSettings\}\|\{[^"]+":.+?"title":"(.+?)""#).unwrap();
         ret.insert(
             String::from("title"),
-            re.captures(&resp)
-                    .ok_or(anyhow::anyhow!("regex err 1"))?
-                    .get(1)
-                    .ok_or(anyhow::anyhow!("regex err 1-1"))?
-                    .as_str().to_string(),
+            re.captures(&resp).ok_or_else(|| dmlerr!())?.get(1).ok_or_else(|| dmlerr!())?.as_str().to_string(),
         );
         let mut param1 = Vec::new();
         let qu = format!(
@@ -48,10 +44,11 @@ impl Twitch {
             &rid,
         );
         let resp = client
-            .post(&self.api1)
+            .post(TTV_API1)
             .header("User-Agent", crate::utils::gen_ua())
             .header("Referer", "https://m.twitch.tv/")
-            .header("Client-Id", "jzkbprff40iqj646a697cyrvl0zt2m6")
+            // .header("Client-Id", "jzkbprff40iqj646a697cyrvl0zt2m6")
+            .header("Client-Id", "kimne78kx3ncx6brgo4mv6wki5h1ko")
             .body(qu)
             .send()
             .await?
@@ -60,20 +57,20 @@ impl Twitch {
         // println!("{:?}", &resp);
         let sign = resp
             .pointer("/data/streamPlaybackAccessToken/signature")
-            .ok_or(anyhow::anyhow!("gl err 1"))?
+            .ok_or_else(|| dmlerr!())?
             .as_str()
-            .ok_or(anyhow::anyhow!("gl err 1-2"))?;
+            .ok_or_else(|| dmlerr!())?;
         let token = resp
             .pointer("/data/streamPlaybackAccessToken/value")
-            .ok_or(anyhow::anyhow!("gl err 2"))?
+            .ok_or_else(|| dmlerr!())?
             .as_str()
-            .ok_or(anyhow::anyhow!("gl err 2-2"))?;
+            .ok_or_else(|| dmlerr!())?;
         param1.clear();
         param1.push(("allow_source", "true"));
         param1.push(("fast_bread", "true"));
         param1.push(("sig", sign));
         param1.push(("token", token));
-        let api2 = self.api2.replace("{channel}", &rid);
+        let api2 = TTV_API2.replace("{channel}", &rid);
         let resp = client
             .get(api2)
             .header("User-Agent", crate::utils::gen_ua())
@@ -88,8 +85,8 @@ impl Twitch {
         // println!("{}", &resp);
         let re = Regex::new(r#"[\s\S]+?\n(http[^\n]+)"#).unwrap();
         ret.insert(
-            String::from("url"),
-            re.captures(&resp).ok_or(anyhow::anyhow!("gl err 3"))?.get(1).ok_or(anyhow::anyhow!("gl err 3-1"))?.as_str().to_string(),
+            "url".to_string(),
+            re.captures(&resp).ok_or_else(|| dmlerr!())?.get(1).ok_or_else(|| dmlerr!())?.as_str().to_string(),
         );
         Ok(ret)
     }

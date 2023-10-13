@@ -4,43 +4,37 @@ pub mod huya;
 pub mod twitch;
 pub mod youtube;
 
-use crate::{
-    config::ConfigManager,
-    dmlive::DMLMessage,
-};
+use crate::ipcmanager::IPCManager;
+use crate::{config::ConfigManager, dmlive::DMLMessage};
 use anyhow::anyhow;
 use anyhow::Result;
 use log::info;
 use log::warn;
-use std::sync::Arc;
+use std::rc::Rc;
 
+#[allow(unused)]
 pub struct StreamFinder {
-    ipc_manager: Arc<crate::ipcmanager::IPCManager>,
-    cm: Arc<ConfigManager>,
+    ipc_manager: Rc<IPCManager>,
+    cm: Rc<ConfigManager>,
     mtx: async_channel::Sender<DMLMessage>,
 }
 
 impl StreamFinder {
-    pub fn new(
-        cm: Arc<ConfigManager>,
-        im: Arc<crate::ipcmanager::IPCManager>,
-        mtx: async_channel::Sender<DMLMessage>,
-    ) -> Self {
+    pub fn new(cm: Rc<ConfigManager>, im: Rc<IPCManager>, mtx: async_channel::Sender<DMLMessage>) -> Self {
         Self {
             ipc_manager: im,
             cm,
             mtx,
         }
     }
-    pub async fn run_bilivideo(self: &Arc<Self>, page: usize) -> Result<(String, Vec<String>)> {
-        let b = bilibili::Bilibili::new(self.cm.clone());
-        match b.get_video(page).await {
-            Ok(mut u) => Ok((u.remove(0), u)),
-            Err(e) => Err(e),
-        }
-    }
 
-    pub async fn run(self: &Arc<Self>) -> Result<(String, Vec<String>)> {
+    // pub async fn run_bilivideo(&self, page: usize) -> Result<(String, Vec<String>)> {
+    //     let b = bilibili::Bilibili::new(self.cm.clone());
+    //     let mut u = b.get_video(page).await?;
+    //     Ok((u.remove(0), u))
+    // }
+
+    pub async fn run(&self) -> Result<(String, Vec<String>)> {
         loop {
             for _ in 0..20 {
                 match self.cm.site {
@@ -57,7 +51,7 @@ impl StreamFinder {
                     }
                     crate::config::Site::BiliVideo => {
                         let b = bilibili::Bilibili::new(self.cm.clone());
-                        let p = self.cm.bvideo_info.read().await.current_page;
+                        let p = self.cm.bvideo_info.borrow().current_page;
                         match b.get_video(p).await {
                             Ok(mut u) => {
                                 return Ok((u.remove(0), u));

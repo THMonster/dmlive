@@ -1,20 +1,15 @@
-use base64::{
-    engine::general_purpose,
-    Engine,
-};
+use crate::{dmlerr, utils};
+use base64::{engine::general_purpose, Engine};
 use chrono::prelude::*;
 use log::*;
 use regex::Regex;
 use reqwest::Client;
-use serde_json::{
-    json,
-    Value,
-};
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
-use tokio::time::sleep;
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use tokio::time::{sleep, Duration};
+
+const YTB_KEY: &'static [u8] =
+    b"eW91dHViZWkvdjEvbGl2ZV9jaGF0L2dldF9saXZlX2NoYXQ/a2V5PUFJemFTeUFPX0ZKMlNscVU4UTRTVEVITEdDaWx3X1k5XzExcWNXOA==";
 
 fn get_param(vid: &str, cid: &str) -> String {
     let ts = Utc::now().timestamp() as u64 * 1000000;
@@ -81,21 +76,15 @@ pub struct Youtube {
 impl Youtube {
     pub fn new() -> Self {
         Youtube {
-            key: String::from_utf8_lossy(
-                general_purpose::STANDARD.decode(b"eW91dHViZWkvdjEvbGl2ZV9jaGF0L2dldF9saXZlX2NoYXQ/a2V5PUFJemFTeUFPX0ZKMlNscVU4UTRTVEVITEdDaWx3X1k5XzExcWNXOA==")
-                    .unwrap()
-                    .as_ref(),
-            )
-            .to_string(),
-            ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/84.0.4147.135 Safari/537.36".to_owned(),
+            key: String::from_utf8_lossy(general_purpose::STANDARD.decode(YTB_KEY).unwrap().as_ref()).to_string(),
+            ua: utils::gen_ua(),
         }
     }
 
-    async fn get_room_info(&self, url: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
-        let client = reqwest::Client::new();
+    async fn get_room_info(&self, url: &str, client: &Client) -> anyhow::Result<(String, String)> {
         let url = url::Url::parse(url)?;
         let room_url = if url.as_str().contains("youtube.com/channel/") {
-            let cid = url.path_segments().ok_or("gri err a1")?.last().ok_or("gri err a12")?;
+            let cid = url.path_segments().ok_or_else(|| dmlerr!())?.last().ok_or_else(|| dmlerr!())?;
             format!("https://www.youtube.com/channel/{}/live", &cid)
         } else {
             for q in url.query_pairs() {
@@ -106,7 +95,7 @@ impl Youtube {
         };
         let resp = client
             .get(&room_url)
-            .header("User-Agent", crate::utils::gen_ua())
+            .header("Connection", "keep-alive")
             .header("Accept-Language", "en-US")
             .header("Referer", "https://www.youtube.com/")
             .send()
@@ -114,29 +103,36 @@ impl Youtube {
             .text()
             .await?;
         let re = Regex::new(r"ytInitialPlayerResponse\s*=\s*(\{.+?\});.*?</script>").unwrap();
-        let j: serde_json::Value = serde_json::from_str(&re.captures(&resp).ok_or("gri err b1")?[1])?;
-        let vid = j.pointer("/videoDetails/videoId").ok_or("gri err b2")?.as_str().unwrap().to_string();
-        let cid = j.pointer("/videoDetails/channelId").ok_or("gri err b3")?.as_str().unwrap().to_string();
+        let j: serde_json::Value = serde_json::from_str(&re.captures(&resp).ok_or_else(|| dmlerr!())?[1])?;
+        let vid = j.pointer("/videoDetails/videoId").ok_or_else(|| dmlerr!())?.as_str().unwrap().to_string();
+        let cid = j.pointer("/videoDetails/channelId").ok_or_else(|| dmlerr!())?.as_str().unwrap().to_string();
         // println!("{} {}", &vid, &cid);
         Ok((vid, cid))
     }
 
-    fn decode_msg(&self, j: &Value) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+    fn decode_msg(&self, j: &Value) -> anyhow::Result<HashMap<String, String>> {
         let mut d = std::collections::HashMap::new();
-        let renderer = j.pointer("/addChatItemAction/item/liveChatTextMessageRenderer").ok_or("dm err 1")?;
+        let renderer = j.pointer("/addChatItemAction/item/liveChatTextMessageRenderer").ok_or_else(|| dmlerr!())?;
         d.insert(
             "name".to_owned(),
-            renderer.pointer("/authorName/simpleText").ok_or("dm err 2")?.as_str().ok_or("dm err 2-2")?.to_string(),
+            renderer
+                .pointer("/authorName/simpleText")
+                .ok_or_else(|| dmlerr!())?
+                .as_str()
+                .ok_or_else(|| dmlerr!())?
+                .to_string(),
         );
-        let runs = renderer.pointer("/message/runs").ok_or("dm err 3")?.as_array().ok_or("dm err 3-2")?;
+        let runs = renderer.pointer("/message/runs").ok_or_else(|| dmlerr!())?.as_array().ok_or_else(|| dmlerr!())?;
         let mut msg = "".to_owned();
         for r in runs {
             match r.pointer("/emoji") {
                 Some(it) => {
-                    msg.push_str(it.pointer("/shortcuts/0").ok_or("dm err 4")?.as_str().ok_or("dm err 4-2")?);
+                    msg.push_str(
+                        it.pointer("/shortcuts/0").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
+                    );
                 }
                 None => {
-                    msg.push_str(r.pointer("/text").ok_or("dm err 5")?.as_str().ok_or("dm err 5-2")?);
+                    msg.push_str(r.pointer("/text").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?);
                 }
             }
         }
@@ -145,17 +141,13 @@ impl Youtube {
         Ok(d)
     }
 
-    async fn get_single_chat(
-        &self,
-        ctn: &mut String,
-        client: Arc<Client>,
-    ) -> Result<Vec<HashMap<String, String>>, Box<dyn std::error::Error>> {
+    async fn get_single_chat(&self, ctn: &mut String, client: &Client) -> anyhow::Result<Vec<HashMap<String, String>>> {
         let mut ret = Vec::new();
         let body = json!({
             "context": {
                 "client": {
                     "visitorData": "",
-                    "userAgent": &self.ua,
+                    "userAgent": self.ua,
                     "clientName": "WEB",
                     "clientVersion": format!("2.{}.01.00", (Utc::now() - chrono::Duration::days(2)).format("%Y%m%d")),
                 },
@@ -165,11 +157,9 @@ impl Youtube {
         let body = serde_json::to_vec(&body)?;
         // println!("{}", String::from_utf8_lossy(&body));
 
-        // let client = reqwest::Client::new();
         let resp = client
             .post(format!("https://www.youtube.com/{}", &self.key))
             .header("Connection", "keep-alive")
-            .header("User-Agent", &self.ua)
             .body(body)
             .send()
             .await?
@@ -178,7 +168,8 @@ impl Youtube {
 
         ctn.clear();
         // println!("{:#?}", &resp);
-        let con = resp.pointer("/continuationContents/liveChatContinuation/continuations/0").ok_or("gsc err 1")?;
+        let con =
+            resp.pointer("/continuationContents/liveChatContinuation/continuations/0").ok_or_else(|| dmlerr!())?;
 
         // println!("{:#?}", &con);
         let metadata = match con.pointer("/invalidationContinuationData") {
@@ -187,16 +178,16 @@ impl Youtube {
                 Some(it) => it,
                 None => match con.pointer("/reloadContinuationData") {
                     Some(it) => it,
-                    None => con.pointer("/liveChatReplayContinuationData").ok_or("gsc err 2")?,
+                    None => con.pointer("/liveChatReplayContinuationData").ok_or_else(|| dmlerr!())?,
                 },
             },
         };
-        ctn.push_str(metadata.pointer("/continuation").ok_or("gsc err 3")?.as_str().ok_or("gsc err 3-2")?);
+        ctn.push_str(metadata.pointer("/continuation").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?);
         let actions = resp
             .pointer("/continuationContents/liveChatContinuation/actions")
-            .ok_or("gsc err 4")?
+            .ok_or_else(|| dmlerr!())?
             .as_array()
-            .ok_or("gsc err 4-2")?;
+            .ok_or_else(|| dmlerr!())?;
         for action in actions {
             if let Ok(it) = self.decode_msg(action) {
                 ret.push(it);
@@ -206,43 +197,43 @@ impl Youtube {
         Ok(ret)
     }
 
-    pub async fn run(
-        &self,
-        url: &str,
-        dtx: async_channel::Sender<(String, String, String)>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let (vid, cid) = self.get_room_info(url).await?;
+    pub async fn run(&self, url: &str, dtx: async_channel::Sender<(String, String, String)>) -> anyhow::Result<()> {
+        let client =
+            reqwest::Client::builder().user_agent(self.ua.clone()).connect_timeout(Duration::from_secs(10)).build()?;
+        let (vid, cid) = self.get_room_info(url, &client).await?;
         let mut ctn = get_param(&vid, &cid);
-        let http_client = Arc::new(reqwest::Client::new());
 
+        let mut interval = tokio::time::interval(Duration::from_millis(2000));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
+            interval.tick().await;
             if ctn.trim().is_empty() {
                 info!("ctn not found, regenerate...");
                 ctn.push_str(&get_param(&vid, &cid));
             }
-            let interval: u64;
-            match self.get_single_chat(&mut ctn, http_client.clone()).await {
+            let itvl: u64;
+            match self.get_single_chat(&mut ctn, &client).await {
                 Ok(mut dm) => {
-                    if !dm.is_empty() {
-                        interval = 2000 / dm.len() as u64;
-                        for d in dm.drain(..) {
-                            if d.get("msg_type").unwrap_or(&"other".into()).eq("danmaku") {
-                                dtx.send((
-                                    d.get("color").unwrap_or(&"ffffff".into()).into(),
-                                    d.get("name").unwrap_or(&"unknown".into()).into(),
-                                    d.get("content").unwrap_or(&" ".into()).into(),
-                                ))
-                                .await?;
-                                sleep(tokio::time::Duration::from_millis(interval)).await;
+                    itvl = 2000usize.saturating_div(if dm.len() == 0 { 1 } else { dm.len() }) as u64;
+                    for d in dm.drain(..) {
+                        if d.get("msg_type").unwrap_or(&"other".into()).eq("danmaku") {
+                            dtx.send((
+                                d.get("color").unwrap_or(&"ffffff".into()).into(),
+                                d.get("name").unwrap_or(&"unknown".into()).into(),
+                                d.get("content").unwrap_or(&" ".into()).into(),
+                            ))
+                            .await?;
+                            if itvl < 50 {
+                            } else if itvl > 500 {
+                                sleep(Duration::from_millis(500)).await;
+                            } else {
+                                sleep(Duration::from_millis(itvl)).await;
                             }
                         }
-                    } else {
-                        sleep(tokio::time::Duration::from_secs(2)).await;
                     }
                 }
                 Err(e) => {
-                    info!("{}", e);
-                    sleep(tokio::time::Duration::from_secs(2)).await;
+                    info!("get single chat error: {}", e);
                 }
             }
         }

@@ -1,12 +1,7 @@
-use std::{
-    cell::RefCell,
-    collections::{HashMap, VecDeque},
-};
+use std::collections::{HashMap, VecDeque};
 
 use bincode::Options;
 use futures::{stream::StreamExt, SinkExt};
-use log::info;
-use log::warn;
 use reqwest::Url;
 use serde::Deserialize;
 use serde_json::json;
@@ -16,6 +11,8 @@ use tokio::{
     time::{sleep, Duration},
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message::Binary};
+
+use crate::dmlerr;
 
 const API_BUVID: &'static str = "https://data.bilibili.com/v/";
 const API_ROOMINIT: &'static str = "https://api.live.bilibili.com/room/v1/Room/room_init";
@@ -59,17 +56,13 @@ impl Bilibili {
             .await?
             .json::<serde_json::Value>()
             .await?;
-        let token = resp
-            .pointer("/data/token")
-            .ok_or(anyhow::anyhow!("err gdt a1"))?
-            .as_str()
-            .ok_or(anyhow::anyhow!("err gdt a12"))?;
+        let token = resp.pointer("/data/token").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?;
         Ok(token.to_string())
     }
 
-    async fn get_ws_info(&self, url: &str) -> Result<(String, Vec<u8>), Box<dyn std::error::Error>> {
+    async fn get_ws_info(&self, url: &str) -> anyhow::Result<(String, Vec<u8>)> {
         let rid =
-            Url::parse(url)?.path_segments().ok_or("rid parse error 1")?.last().ok_or("rid parse error 2")?.to_string();
+            Url::parse(url)?.path_segments().ok_or_else(|| dmlerr!())?.last().ok_or_else(|| dmlerr!())?.to_string();
         let mut reg_data: Vec<u8> = Vec::new();
         let client = reqwest::Client::builder().user_agent(crate::utils::gen_ua()).build()?;
         let param1 = vec![("id", rid.as_str())];
@@ -81,7 +74,7 @@ impl Bilibili {
             .await?
             .json::<serde_json::Value>()
             .await?;
-        let rid = resp.pointer("/data/room_id").ok_or("gwi pje 1")?.as_u64().ok_or("gwi pje 1-2")?;
+        let rid = resp.pointer("/data/room_id").ok_or_else(|| dmlerr!())?.as_u64().ok_or_else(|| dmlerr!())?;
         let buvid = self.get_buvid(&client).await?;
         let token = self.get_dm_token(&client, url, rid.to_string().as_str()).await?;
         // let rn = rand::random::<u64>();
@@ -108,12 +101,7 @@ impl Bilibili {
         if header.op == 5 {
             let j: serde_json::Value = serde_json::from_slice(data)?;
             // warn!("{:?}", &j);
-            let msg_type = match j
-                .pointer("/cmd")
-                .ok_or_else(|| anyhow::anyhow!("cmd parse failed 1"))?
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("cmd parse failed 12"))?
-            {
+            let msg_type = match j.pointer("/cmd").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())? {
                 "SEND_GIFT" => "gift",
                 "SUPER_CHAT_MESSAGE" => "superchat",
                 "WELCOME" => "enter",
@@ -205,9 +193,7 @@ impl Bilibili {
         Ok(ret)
     }
 
-    pub async fn run(
-        &self, url: &str, dtx: async_channel::Sender<(String, String, String)>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn run(&self, url: &str, dtx: async_channel::Sender<(String, String, String)>) -> anyhow::Result<()> {
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(10);
         let (ws, reg_data) = self.get_ws_info(url).await?;
         let (ws_stream, _) = connect_async(&ws).await?;
@@ -228,15 +214,14 @@ impl Bilibili {
         };
 
         let (dmq_tx, mut dmq_rx) = mpsc::channel(1000);
-        let dm_cnt = RefCell::new(0u64);
+        let dm_cnt = std::cell::Cell::new(0u64);
         let decode_task = async {
             while let Some(mut it) = rx.recv().await {
                 let mut dm = self.decode_msg(&mut it, &tx).await?;
                 // dm_queue.append(&mut dm);
                 for d in dm.drain(..) {
                     dmq_tx.send(d).await?;
-                    let mut dm_cnt = dm_cnt.borrow_mut();
-                    *dm_cnt = dm_cnt.saturating_add(1);
+                    dm_cnt.set(dm_cnt.get() + 1);
                 }
             }
             anyhow::Ok(())
@@ -244,9 +229,8 @@ impl Bilibili {
         let balance_task = async {
             while let Some(d) = dmq_rx.recv().await {
                 let itvl = {
-                    let mut dm_cnt = dm_cnt.borrow_mut();
-                    let itvl = 2000u64.saturating_div(*dm_cnt);
-                    *dm_cnt = dm_cnt.saturating_sub(1);
+                    let itvl = 2000u64.saturating_div(dm_cnt.get());
+                    dm_cnt.set(dm_cnt.get().saturating_sub(1));
                     itvl
                 };
                 if d.get("msg_type").unwrap_or(&"other".into()).eq("danmaku") {
@@ -272,7 +256,6 @@ impl Bilibili {
             it = decode_task => { it?; },
             it = balance_task => { it?; },
         }
-        info!("ws closed!");
         Ok(())
     }
 }

@@ -4,6 +4,12 @@ use regex::Regex;
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::dmlerr;
+
+const DOUYU_API1: &'static str = "https://www.douyu.com/betard/";
+// const DOUYU_API2: &'static str = "https://open.douyucdn.cn/api/RoomApi/room/";
+const DOUYU_API3: &'static str = "https://www.douyu.com/lapi/live/getH5Play/";
+
 fn get_random_name(l: u8) -> String {
     let mut ret = String::new();
     for _ in 0..l {
@@ -21,29 +27,19 @@ fn get_js_md5() -> String {
     ret
 }
 
-pub struct Douyu {
-    api1: String,
-    // api2: String,
-    api3: String,
-}
+pub struct Douyu {}
 impl Douyu {
     pub fn new() -> Self {
-        Douyu {
-            api1: String::from("https://www.douyu.com/betard/"),
-            // api2: String::from("https://open.douyucdn.cn/api/RoomApi/room/"),
-            api3: String::from("https://www.douyu.com/lapi/live/getH5Play/"),
-        }
+        Self {}
     }
-    pub async fn get_live(
-        &self,
-        room_url: &str,
-    ) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+    pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<String, String>> {
         let mut ret = HashMap::new();
         let rid = url::Url::parse(room_url)?
             .path_segments()
-            .ok_or("rid parse error 1")?
+            .ok_or_else(|| dmlerr!())?
             .last()
-            .ok_or("rid parse error 2")?.to_string();
+            .ok_or_else(|| dmlerr!())?
+            .to_string();
         let debug_messages = get_random_name(8);
         let decrypted_codes = get_random_name(8);
         let resoult = get_random_name(8);
@@ -59,7 +55,7 @@ impl Douyu {
             .text()
             .await?;
         let re = Regex::new(r"(var vdwdae325w_64we =[\s\S]+?)\s*</script>").unwrap();
-        let js_enc = re.captures(&resp).ok_or("regex err 1")?[1].to_string();
+        let js_enc = re.captures(&resp).ok_or_else(|| dmlerr!())?[1].to_string();
         // let re = Regex::new(r"function ub98484234\(.+?\Weval\((\w+)\);").unwrap();
         // let workflow = re.captures(&js_enc).ok_or("regex err 2")?[1].to_string();
         let js_dom = format!(
@@ -93,10 +89,7 @@ impl Douyu {
             &debug_messages, &decrypted_codes, &workflow
         );
 
-        let did = Uuid::new_v4()
-            .as_simple()
-            .encode_lower(&mut Uuid::encode_buffer())
-            .to_string();
+        let did = Uuid::new_v4().as_simple().encode_lower(&mut Uuid::encode_buffer()).to_string();
         let tsec = format!("{}", Local::now().timestamp());
 
         let js_debug = format!(
@@ -119,17 +112,17 @@ impl Douyu {
         let js_all = format!("{}{}{}{}", &get_js_md5(), &js_dom, &js_enc, &js_debug);
 
         let rest1 = crate::utils::js_call(&js_all).await?;
-        let rest1 = rest1.get(0).ok_or("param error")?;
+        let rest1 = rest1.get(0).ok_or_else(|| dmlerr!())?;
         let mut param1 = Vec::new();
         let re = Regex::new(r"v=(\d+)").unwrap();
         param1.push((
             "v",
-            re.captures(rest1).ok_or("regex err 3")?[1].to_string(),
+            re.captures(rest1).ok_or_else(|| dmlerr!())?[1].to_string(),
         ));
         let re = Regex::new(r"sign=(\w{32})").unwrap();
         param1.push((
             "sign",
-            re.captures(rest1).ok_or("regex err 4")?[1].to_string(),
+            re.captures(rest1).ok_or_else(|| dmlerr!())?[1].to_string(),
         ));
         param1.push(("did", did));
         param1.push(("tt", tsec));
@@ -140,7 +133,7 @@ impl Douyu {
         // println!("{:?}", &param1);
 
         let resp = client
-            .post(format!("{}{}", self.api3, &rid))
+            .post(format!("{}{}", DOUYU_API3, &rid))
             .header("User-Agent", crate::utils::gen_ua())
             .header("Referer", "https://www.douyu.com/")
             .form(&param1)
@@ -153,18 +146,12 @@ impl Douyu {
             String::from("url"),
             format!(
                 "{}/{}",
-                resp.pointer("/data/rtmp_url")
-                    .ok_or("json err")?
-                    .as_str()
-                    .ok_or("cannot convert to string")?,
-                resp.pointer("/data/rtmp_live")
-                    .ok_or("json err")?
-                    .as_str()
-                    .ok_or("cannot convert to string")?
+                resp.pointer("/data/rtmp_url").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
+                resp.pointer("/data/rtmp_live").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?
             ),
         );
         let resp = client
-            .get(format!("{}{}", self.api1, &rid))
+            .get(format!("{}{}", DOUYU_API1, &rid))
             .header("User-Agent", crate::utils::gen_ua())
             .header("Referer", "https://www.douyu.com/")
             .send()
@@ -175,14 +162,8 @@ impl Douyu {
             String::from("title"),
             format!(
                 "{} - {}",
-                resp.pointer("/room/room_name")
-                    .ok_or("json err")?
-                    .as_str()
-                    .ok_or("cannot convert to string")?,
-                resp.pointer("/room/nickname")
-                    .ok_or("json err")?
-                    .as_str()
-                    .ok_or("cannot convert to string")?
+                resp.pointer("/room/room_name").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
+                resp.pointer("/room/nickname").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?
             ),
         );
 

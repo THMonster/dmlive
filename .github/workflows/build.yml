@@ -9,7 +9,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        build: [aarch64, aarch64-musl, amd64, amd64-musl]
+        build: [aarch64, aarch64-musl, aarch64-android, amd64, amd64-musl]
         include:
           - build: aarch64
             os: ubuntu-latest
@@ -21,6 +21,11 @@ jobs:
             rust: stable
             cross: true
             target: aarch64-unknown-linux-musl
+          - build: aarch64-android
+            os: ubuntu-latest
+            rust: 1.67.0
+            cross: true
+            target: aarch64-linux-android
           - build: amd64
             os: ubuntu-latest
             rust: stable
@@ -35,19 +40,30 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v2
+      uses: actions/checkout@v3
       with:
         submodules: 'recursive'
-    - uses: actions-rs/toolchain@v1
+    - name: Install musl-tools on Linux
+      run: sudo apt-get update --yes && sudo apt-get install --yes musl-tools
+      if: contains(matrix.target, 'musl')
+    - name: Build binary
+      uses: houseabsolute/actions-rust-cross@v0
       with:
         toolchain: ${{ matrix.rust }}
-        target: ${{ matrix.target }}
-        override: true
-    - uses: actions-rs/cargo@v1
-      with:
-        use-cross: ${{ matrix.cross }}
         command: build
-        args: --release --target ${{ matrix.target }}
+        target: ${{ matrix.target }}
+        args: "--release"
+        strip: true
+    # - uses: actions-rs/toolchain@v1
+    #   with:
+    #     toolchain: ${{ matrix.rust }}
+    #     target: ${{ matrix.target }}
+    #     override: true
+    # - uses: actions-rs/cargo@v1
+    #   with:
+    #     use-cross: ${{ matrix.cross }}
+    #     command: build
+    #     args: --release --target ${{ matrix.target }}
     - run: mv ./target/release/dmlive ./dmlive-${{ matrix.build }} || mv "./target/${{ matrix.target }}/release/dmlive" ./dmlive-${{ matrix.build }}
 
     - uses: ncipollo/release-action@v1

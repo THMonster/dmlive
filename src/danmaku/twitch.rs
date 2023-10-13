@@ -1,24 +1,23 @@
+use crate::dmlerr;
 use futures::{stream::StreamExt, SinkExt};
 use regex::Regex;
 use reqwest::Url;
 use std::collections::HashMap;
-use tokio::time::sleep;
-use tokio_tungstenite::connect_async;
+use tokio::time::{sleep, Duration};
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-pub struct Twitch {
-    heartbeat: String,
-}
+const HEARTBEAT: &'static str = "PING";
+
+pub struct Twitch {}
 
 impl Twitch {
     pub fn new() -> Self {
-        Twitch {
-            heartbeat: "PING".to_string(),
-        }
+        Self {}
     }
 
-    async fn get_ws_info(&self, url: &str) -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
+    async fn get_ws_info(&self, url: &str) -> anyhow::Result<(String, Vec<String>)> {
         let rid =
-            Url::parse(url)?.path_segments().ok_or("rid parse error 1")?.last().ok_or("rid parse error 2")?.to_string();
+            Url::parse(url)?.path_segments().ok_or_else(|| dmlerr!())?.last().ok_or_else(|| dmlerr!())?.to_string();
         let mut reg_datas: Vec<String> = Vec::new();
 
         reg_datas.push("CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership".to_owned());
@@ -32,7 +31,7 @@ impl Twitch {
         Ok(("wss://irc-ws.chat.twitch.tv".to_string(), reg_datas))
     }
 
-    fn decode_msg(&self, data: &mut [u8]) -> Result<Vec<HashMap<String, String>>, Box<dyn std::error::Error>> {
+    fn decode_msg(&self, data: &mut [u8]) -> anyhow::Result<Vec<HashMap<String, String>>> {
         let mut ret = Vec::new();
         let msg = String::from_utf8_lossy(data);
         for m in msg.split('\n') {
@@ -61,52 +60,40 @@ impl Twitch {
         Ok(ret)
     }
 
-    pub async fn run(
-        &self,
-        url: &str,
-        dtx: async_channel::Sender<(String, String, String)>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn run(&self, url: &str, dtx: async_channel::Sender<(String, String, String)>) -> anyhow::Result<()> {
         let (ws, mut reg_datas) = self.get_ws_info(url).await?;
         let (ws_stream, _) = connect_async(&ws).await?;
         let (mut ws_write, mut ws_read) = ws_stream.split();
         for reg_data in reg_datas.drain(..) {
-            ws_write.send(tokio_tungstenite::tungstenite::Message::text(reg_data)).await?;
+            ws_write.send(Message::text(reg_data)).await?;
         }
-        let hb = self.heartbeat.clone();
-        tokio::spawn(async move {
-            loop {
-                sleep(tokio::time::Duration::from_secs(20)).await;
-                let hb1 = hb.clone();
-                match ws_write.send(tokio_tungstenite::tungstenite::Message::text(hb1)).await {
-                    Ok(_) => {}
-                    _ => {
-                        println!("send heartbeat failed!")
-                    }
-                };
+        let hb_task = async {
+            while let Ok(_) = ws_write.send(Message::text(HEARTBEAT)).await {
+                sleep(Duration::from_secs(20)).await;
             }
-        });
-        while let Some(m) = ws_read.next().await {
-            match m {
-                Ok(it) => {
-                    let mut dm = self.decode_msg(it.into_data().as_mut())?;
-                    for d in dm.drain(..) {
-                        if d.get("msg_type").unwrap_or(&"other".into()).eq("danmaku") {
-                            dtx.send((
-                                d.get("color").unwrap_or(&"ffffff".into()).into(),
-                                d.get("name").unwrap_or(&"unknown".into()).into(),
-                                d.get("content").unwrap_or(&" ".into()).into(),
-                            ))
-                            .await?;
-                        }
+            Err(anyhow::anyhow!("send heartbeat failed!"))
+        };
+        let recv_task = async {
+            while let Some(m) = ws_read.next().await {
+                let m = m?;
+                let mut dm = self.decode_msg(m.into_data().as_mut())?;
+                for mut d in dm.drain(..) {
+                    if d.remove("msg_type").unwrap_or("other".into()).eq("danmaku") {
+                        dtx.send((
+                            d.remove("color").unwrap_or("ffffff".into()),
+                            d.remove("name").unwrap_or("unknown".into()),
+                            d.remove("content").unwrap_or("".into()),
+                        ))
+                        .await?;
                     }
                 }
-                Err(e) => {
-                    println!("read ws error: {:?}", e);
-                    break;
-                }
             }
+            anyhow::Ok(())
+        };
+        tokio::select! {
+            it = hb_task => { it?; },
+            it = recv_task => { it?; },
         }
-        println!("ws closed!");
         Ok(())
     }
 }

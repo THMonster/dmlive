@@ -1,4 +1,3 @@
-use anyhow::Result;
 use bytes::BufMut;
 use log::info;
 use tokio::io::AsyncWriteExt;
@@ -12,7 +11,7 @@ impl Bilibili {
 
     pub async fn run(
         &self, url: &str, dtx: async_channel::Sender<(String, String, String)>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> anyhow::Result<()> {
         let client = reqwest::Client::builder()
             .deflate(false)
             .user_agent(crate::utils::gen_ua())
@@ -42,6 +41,7 @@ impl Bilibili {
                 .await?;
             }
         }
+        dtx.close();
         Ok(())
     }
 }

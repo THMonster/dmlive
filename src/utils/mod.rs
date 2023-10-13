@@ -6,6 +6,18 @@ use tokio::{
     process::Command,
 };
 
+#[macro_export]
+macro_rules! dmlerr {
+    ($($args: expr),*) => {
+        anyhow::anyhow!(
+            "file: {}, line: {}, column: {}",
+            file!(),
+            line!(),
+            column!()
+        )
+    };
+}
+
 pub fn gen_ua() -> String {
     // let rn = rand::random::<u64>();
     // let n1 = 50 + (rn % 30);
@@ -29,21 +41,37 @@ pub fn gen_ua_safari() -> String {
 
 // pub async fn js_call(js: &str, func: &str, args: &Vec<(u8, String)>) -> anyhow::Result<Vec<String>> {
 pub async fn js_call(js: &str) -> anyhow::Result<Vec<String>> {
-    let mut rt =
-        Command::new("node").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn()?;
+    let mut rt = Command::new("node")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
     let mut rtin = rt.stdin.take().unwrap();
     let rtout = rt.stdout.take().unwrap();
+    let mut reader = tokio::io::BufReader::new(rtout).lines();
     let js = js.to_string();
-    tokio::task::spawn_local(async move {
+    tokio::task::spawn(async move {
         rtin.write_all(js.as_bytes()).await.unwrap();
         rtin.shutdown().await.unwrap();
     });
-    // let rtout = rt.wait_with_output().await.unwrap();
 
-    let mut reader = tokio::io::BufReader::new(rtout).lines();
+    // let js_task = async {
+    //     rtin.write_all(js.as_bytes()).await?;
+    //     // rtin.flush().await?;
+    //     rtin.shutdown().await.unwrap();
+    //     rt.wait().await?;
+    //     anyhow::Ok(())
+    // };
     let mut ret = Vec::new();
-    while let Some(line) = reader.next_line().await.unwrap() {
-        ret.push(line)
+    let out_task = async {
+        while let Some(line) = reader.next_line().await.unwrap() {
+            ret.push(line);
+            break;
+        }
+    };
+    tokio::select! {
+        // _ = js_task => {},
+        _ = out_task => {},
     }
     info!("{:?}", &ret);
     Ok(ret)
@@ -94,7 +122,7 @@ pub fn nm(a: u64, ary: u64) -> Vec<u8> {
     tp(0, a, &vn(ary))
 }
 
-pub fn str_to_ms(time_str: &str) -> u64 {
+pub fn _str_to_ms(time_str: &str) -> u64 {
     let mut t = time_str.trim().rsplit(':');
     let mut ret = 0f64;
     let mut i = 0usize;
@@ -114,4 +142,17 @@ pub fn str_to_ms(time_str: &str) -> u64 {
         i = i.saturating_add(1);
     }
     (ret * 1000.0) as u64
+}
+
+pub async fn is_android() -> bool {
+    let output = Command::new("getprop").arg("ro.build.version.release").output();
+    match output.await {
+        Ok(it) => {
+            if it.status.success() {
+                return true;
+            }
+        }
+        Err(_) => {}
+    };
+    false
 }

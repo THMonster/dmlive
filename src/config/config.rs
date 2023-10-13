@@ -18,6 +18,7 @@ pub enum BVideoType {
     Video,
     Bangumi
 }
+
 pub struct BVideoInfo {
     pub base_url: String,
     pub video_type: BVideoType,

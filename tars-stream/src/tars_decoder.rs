@@ -12,6 +12,8 @@ pub struct TarsDecoder {
     buf: Bytes,
     pos: usize,
 }
+
+#[allow(unused)]
 #[derive(Debug)]
 pub struct Head {
     tag: u8,

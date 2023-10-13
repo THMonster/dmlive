@@ -1,27 +1,23 @@
 pub mod flv;
 pub mod hls;
-pub mod youtube;
 pub mod segment;
+pub mod youtube;
 
 use crate::{
     config::{ConfigManager, StreamType},
     dmlive::DMLMessage,
+    ipcmanager::IPCManager,
 };
-use anyhow::*;
-use std::{ops::Deref, sync::Arc};
+use std::rc::Rc;
 
 pub struct Streamer {
-    ipc_manager: Arc<crate::ipcmanager::IPCManager>,
-    cm: Arc<ConfigManager>,
+    ipc_manager: Rc<IPCManager>,
+    cm: Rc<ConfigManager>,
     mtx: async_channel::Sender<DMLMessage>,
 }
 
 impl Streamer {
-    pub fn new(
-        cm: Arc<ConfigManager>,
-        im: Arc<crate::ipcmanager::IPCManager>,
-        mtx: async_channel::Sender<DMLMessage>,
-    ) -> Self {
+    pub fn new(cm: Rc<ConfigManager>, im: Rc<IPCManager>, mtx: async_channel::Sender<DMLMessage>) -> Self {
         Self {
             ipc_manager: im,
             cm,
@@ -29,8 +25,8 @@ impl Streamer {
         }
     }
 
-    pub async fn run(self: &Arc<Self>, rurl: Vec<String>) -> Result<()> {
-        match self.cm.stream_type.read().await.deref() {
+    pub async fn run(&self, rurl: &Vec<String>) -> anyhow::Result<()> {
+        match self.cm.stream_type.get() {
             StreamType::FLV => {
                 let s = flv::FLV::new(
                     rurl[0].to_string(),
@@ -38,18 +34,16 @@ impl Streamer {
                     self.ipc_manager.clone(),
                     self.mtx.clone(),
                 );
-                let s = Arc::new(s);
-                let _ = s.run().await;
+                s.run().await?;
             }
-            StreamType::HLS => {
+            StreamType::HLS(_) => {
                 let s = hls::HLS::new(
                     rurl[0].to_string(),
                     self.cm.clone(),
                     self.ipc_manager.clone(),
                     self.mtx.clone(),
                 );
-                let s = Arc::new(s);
-                let _ = s.run().await;
+                s.run().await?;
             }
             StreamType::DASH => {
                 let s = youtube::Youtube::new(
@@ -60,8 +54,7 @@ impl Streamer {
                     self.ipc_manager.clone(),
                     self.mtx.clone(),
                 );
-                let s = Arc::new(s);
-                s.run().await;
+                s.run().await?;
             }
         }
         Ok(())

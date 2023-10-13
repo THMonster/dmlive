@@ -1,13 +1,6 @@
-use std::{
-    fs::DirEntry,
-    time::SystemTime,
-};
+use std::{fs::DirEntry, time::SystemTime};
 
-use aes::cipher::{
-    block_padding::Pkcs7,
-    BlockDecryptMut,
-    KeyIvInit,
-};
+use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
 use log::info;
 use sqlx::sqlite::SqlitePoolOptions;
 use tokio::process::Command;
@@ -112,11 +105,15 @@ async fn get_chrome_cookies(host: &str, is_chromium: bool) -> anyhow::Result<Str
         .connect(&format!("sqlite:{}", cookie_path.to_string_lossy()))
         .await?;
     let mut cookies = sqlx::query_as::<_, ChromeCookie>(
-        "
+        format!(
+            "
 SELECT name, value, encrypted_value 
 FROM cookies
-WHERE host_key LIKE '.bilibili.com'
+WHERE host_key LIKE '{}'
         ",
+            host
+        )
+        .as_str(),
     )
     .fetch_all(&pool) // -> Vec<Country>
     .await?;
@@ -170,11 +167,15 @@ async fn get_firefox_cookies(host: &str) -> anyhow::Result<String> {
         .connect(&format!("sqlite:{}", cookie_path.to_string_lossy()))
         .await?;
     let mut cookies = sqlx::query_as::<_, FirefoxCookie>(
-        "
+        format!(
+            "
 SELECT name, value
 FROM moz_cookies
-WHERE host LIKE '.bilibili.com'
+WHERE host LIKE '{}'
         ",
+            host
+        )
+        .as_str(),
     )
     .fetch_all(&pool) // -> Vec<Country>
     .await?;
@@ -195,5 +196,5 @@ pub async fn get_cookies_from_browser(browser: &str, host: &str) -> anyhow::Resu
     } else if browser.eq("chromium") {
         return get_chrome_cookies(host, true).await;
     }
-    todo!()
+    Err(anyhow::anyhow!("browser not supported"))
 }

@@ -1,30 +1,31 @@
 use std::{
-    collections::HashMap,
-    rc::Rc,
+    cell::RefCell,
+    collections::{hash_map::DefaultHasher, HashMap},
+    hash::{Hash, Hasher},
     time::Instant,
 };
 
-
-use tokio::sync::RwLock;
-
 pub struct FudujiKiller {
     start_time: Instant,
-    dm_stats: RwLock<HashMap<Rc<String>, (u128, i64)>>, // time and count
+    dm_stats: RefCell<HashMap<u64, (u128, u64)>>, // time and count
 }
 
 impl FudujiKiller {
     pub fn new() -> Self {
         Self {
             start_time: Instant::now(),
-            dm_stats: RwLock::new(HashMap::new()),
+            dm_stats: RefCell::new(HashMap::new()),
         }
     }
 
-    pub async fn dm_check(&self, dm: Rc<String>) -> bool {
+    pub fn dm_check(&self, dm: &str) -> bool {
+        let mut s = DefaultHasher::new();
+        dm.hash(&mut s);
+        let dm_hash = s.finish();
         let mut ret = true;
         let now = self.start_time.elapsed().as_millis();
-        let mut dmst = self.dm_stats.write().await;
-        match dmst.get_mut(&dm) {
+        let mut dmst = self.dm_stats.borrow_mut();
+        match dmst.get_mut(&dm_hash) {
             Some(it) => {
                 if now > it.0 + 3000 {
                     it.0 = now;
@@ -37,7 +38,7 @@ impl FudujiKiller {
                 }
             }
             None => {
-                dmst.insert(dm, (now, 1));
+                dmst.insert(dm_hash, (now, 1));
             }
         }
         // warn!("dm_stats len: {}", dmst.len());

@@ -1,36 +1,29 @@
 pub mod cmdparser;
-
-use crate::{
-    config::ConfigManager,
-    dmlive::DMLMessage,
-    utils::gen_ua,
-};
-use anyhow::anyhow;
+use crate::config::Platform;
+use crate::dmlerr;
+use crate::ipcmanager::IPCManager;
+use crate::{config::ConfigManager, dmlive::DMLMessage, utils::gen_ua};
 use anyhow::Result;
+use futures::StreamExt;
 use log::info;
-use std::sync::Arc;
+use std::cell::Cell;
+use std::rc::Rc;
 use tokio::{
-    io::{
-        AsyncBufReadExt,
-        AsyncWriteExt,
-    },
+    io::{AsyncBufReadExt, AsyncWriteExt},
     net::UnixStream,
     process::Command,
 };
 
 pub struct MpvControl {
-    ipc_manager: Arc<crate::ipcmanager::IPCManager>,
-    cm: Arc<ConfigManager>,
+    last_rpc_ts: Cell<i64>,
+    ipc_manager: Rc<IPCManager>,
+    cm: Rc<ConfigManager>,
     mtx: async_channel::Sender<DMLMessage>,
     mpv_command_tx: async_channel::Sender<String>,
     mpv_command_rx: async_channel::Receiver<String>,
 }
 impl MpvControl {
-    pub fn new(
-        cm: Arc<ConfigManager>,
-        im: Arc<crate::ipcmanager::IPCManager>,
-        mtx: async_channel::Sender<DMLMessage>,
-    ) -> Self {
+    pub fn new(cm: Rc<ConfigManager>, im: Rc<IPCManager>, mtx: async_channel::Sender<DMLMessage>) -> Self {
         let (tx, rx) = async_channel::unbounded();
         Self {
             ipc_manager: im,
@@ -38,6 +31,7 @@ impl MpvControl {
             mtx,
             mpv_command_tx: tx,
             mpv_command_rx: rx,
+            last_rpc_ts: Cell::new(0),
         }
     }
 
@@ -54,6 +48,7 @@ impl MpvControl {
             "--keep-open=no",
             "--idle=yes",
             "--player-operation-mode=pseudo-gui",
+            "--sub=1",
         ])
         .arg(format!(
             "--input-ipc-server={}",
@@ -62,7 +57,7 @@ impl MpvControl {
         Ok(ret)
     }
 
-    pub async fn reload_edl_video(&self, urls: &Vec<String>, title: &str) -> Result<()> {
+    pub async fn reload_edl_video(&self, urls: &Vec<String>) -> Result<()> {
         let edl = format!(
             "edl://!no_clip;!no_chapters;%{0}%{1};!new_stream;!no_clip;!no_chapters;%{2}%{3}",
             urls[2].chars().count(),
@@ -70,7 +65,7 @@ impl MpvControl {
             urls[1].chars().count(),
             urls[1]
         );
-        info!("{}--{}", &edl, title);
+        info!("load video: {}--{}", &edl, self.cm.title.borrow());
         self.mpv_command_tx
             .send(format!(
                 "{{ \"command\": [\"loadfile\", \"{}\"], \"async\": true }}\n",
@@ -80,26 +75,30 @@ impl MpvControl {
         self.mpv_command_tx
             .send(format!(
                 "{{ \"command\": [\"set_property\", \"force-media-title\", \"{}\"] }}\n",
-                title.replace(r#"""#, r#"\""#)
+                self.cm.title.borrow().replace(r#"""#, r#"\""#)
             ))
             .await?;
         Ok(())
     }
 
     pub async fn reload_video(&self) -> Result<()> {
-        self.mpv_command_tx
-            .send(format!(
-                "{{ \"command\": [\"loadfile\", \"{}\"] }}\n            ",
-                self.ipc_manager.get_f2m_socket_path()
-            ))
-            .await?;
+        if self.cm.plat == Platform::Android {
+            Command::new("termux-open").arg(self.ipc_manager.get_f2m_socket_path()).spawn()?;
+        } else {
+            self.mpv_command_tx
+                .send(format!(
+                    "{{ \"command\": [\"loadfile\", \"{}\"] }}\n",
+                    self.ipc_manager.get_f2m_socket_path()
+                ))
+                .await?;
+        }
         Ok(())
     }
 
-    pub async fn quit(&self) -> Result<()> {
-        self.mpv_command_tx.send("{ \"command\": [\"quit\"] }\n".into()).await?;
-        Ok(())
-    }
+    // pub async fn quit(&self) -> Result<()> {
+    //     self.mpv_command_tx.send("{ \"command\": [\"quit\"] }\n".into()).await?;
+    //     Ok(())
+    // }
 
     pub async fn stop(&self) -> Result<()> {
         self.mpv_command_tx.send("{ \"command\": [\"stop\"] }\n".into()).await?;
@@ -124,12 +123,12 @@ impl MpvControl {
         Ok(())
     }
 
-    async fn handle_mpv_event(self: &Arc<Self>, line: &str, last_time: &mut i64) -> Result<()> {
-        let j: serde_json::Value = serde_json::from_str(line)?;
+    async fn handle_mpv_event(&self, line: String) -> Result<()> {
+        let j: serde_json::Value = serde_json::from_str(&line)?;
         if let Some(rid) = j.pointer("/request_id") {
             if rid.as_u64().eq(&Some(114)) {
-                let w = j.pointer("/data/w").ok_or(anyhow!("hme err a1"))?.as_u64().unwrap();
-                let h = j.pointer("/data/h").ok_or(anyhow!("hme err a2"))?.as_u64().unwrap();
+                let w = j.pointer("/data/w").ok_or_else(|| dmlerr!())?.as_u64().unwrap();
+                let h = j.pointer("/data/h").ok_or_else(|| dmlerr!())?.as_u64().unwrap();
                 if matches!(self.cm.site, crate::config::Site::BiliVideo) {
                     let _ = self.mtx.send(DMLMessage::SetVideoInfo((w, h, 0))).await;
                     self.mpv_command_tx
@@ -150,7 +149,7 @@ impl MpvControl {
                 match j.pointer("/data") {
                     Some(it) => match it.as_f64() {
                         Some(it) => {
-                            self.cm.display_fps.write().await.0 = it.round() as u64;
+                            self.cm.display_fps.set((it.round() as u64, self.cm.display_fps.get().1));
                         }
                         None => {}
                     },
@@ -160,7 +159,7 @@ impl MpvControl {
                 match j.pointer("/data") {
                     Some(it) => match it.as_f64() {
                         Some(it) => {
-                            if self.cm.display_fps.read().await.1 == 0 && it < 59.0 {
+                            if self.cm.display_fps.get().1 == 0 && it < 59.0 {
                                 self.mpv_command_tx
                                     .send(
                                         r#"{ "command": ["set_property", "vf", "fps=fps=60:round=near"] }
@@ -176,23 +175,16 @@ impl MpvControl {
                 }
             }
         }
-        let event = j.pointer("/event").ok_or(anyhow!("hme err 1"))?.as_str().ok_or(anyhow!("hme err 2"))?;
+        let event = j.pointer("/event").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?;
         if event.eq("end-file") {
             if matches!(self.cm.site, crate::config::Site::BiliVideo) {
-                if j.pointer("/reason").ok_or(anyhow!("hme err 9"))?.as_str().unwrap().eq("eof") {
-                    let _ = self
-                        .mtx
-                        .send(DMLMessage::GoToBVPage(
-                            self.cm.bvideo_info.read().await.current_page + 1,
-                        ))
-                        .await;
+                if j.pointer("/reason").ok_or_else(|| dmlerr!())?.as_str().unwrap().eq("eof") {
+                    self.cm.bvideo_info.borrow_mut().current_page += 1;
+                    let _ = self.mtx.send(DMLMessage::PlayVideo).await;
                 }
             } else {
-                let s1 = self.clone();
-                tokio::task::spawn_local(async move {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-                    let _ = s1.reload_video().await;
-                });
+                // tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                // let _ = self.reload_video().await;
             }
         } else if event.eq("file-loaded") {
             tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
@@ -206,15 +198,18 @@ impl MpvControl {
                     .into(),
                 )
                 .await;
-        } else if event.eq("client-message") && (chrono::Utc::now().timestamp_millis() - *last_time > 1000) {
-            *last_time = chrono::Utc::now().timestamp_millis();
+        } else if event.eq("client-message") {
+            let now = chrono::Utc::now().timestamp_millis();
+            if now - self.last_rpc_ts.get() < 1000 {
+                return Ok(());
+            }
+            self.last_rpc_ts.set(now);
             let cmds = cmdparser::CmdParser::new(
-                j.pointer("/args/0").ok_or(anyhow!("hme err 3"))?.as_str().ok_or(anyhow!("hme err 4"))?,
+                j.pointer("/args/0").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
             );
             if cmds.restart {
                 if matches!(self.cm.site, crate::config::Site::BiliVideo) {
-                    let p = self.cm.bvideo_info.read().await.current_page;
-                    let _ = self.mtx.send(DMLMessage::GoToBVPage(p)).await;
+                    let _ = self.mtx.send(DMLMessage::PlayVideo).await;
                 } else {
                     self.stop().await?;
                 }
@@ -222,19 +217,9 @@ impl MpvControl {
             if cmds.fs.is_some() {
                 let _ = self.mtx.send(DMLMessage::SetFontScale(cmds.fs.unwrap())).await;
             } else if cmds.fsup {
-                let _ = self
-                    .mtx
-                    .send(DMLMessage::SetFontScale(
-                        *self.cm.font_scale.read().await + 0.15,
-                    ))
-                    .await;
+                let _ = self.mtx.send(DMLMessage::SetFontScale(self.cm.font_scale.get() + 0.15)).await;
             } else if cmds.fsdown {
-                let _ = self
-                    .mtx
-                    .send(DMLMessage::SetFontScale(
-                        *self.cm.font_scale.read().await - 0.15,
-                    ))
-                    .await;
+                let _ = self.mtx.send(DMLMessage::SetFontScale(self.cm.font_scale.get() - 0.15)).await;
             }
             if cmds.fa.is_some() {
                 let _ = self.mtx.send(DMLMessage::SetFontAlpha(cmds.fa.unwrap())).await;
@@ -243,23 +228,24 @@ impl MpvControl {
                 let _ = self.mtx.send(DMLMessage::SetDMSpeed(cmds.speed.unwrap())).await;
             }
             if cmds.page.is_some() {
-                let _ = self.mtx.send(DMLMessage::GoToBVPage(cmds.page.unwrap() as usize)).await;
+                self.cm.bvideo_info.borrow_mut().current_page = cmds.page.unwrap() as usize;
+                let _ = self.mtx.send(DMLMessage::PlayVideo).await;
             }
             if cmds.nick {
                 let _ = self.mtx.send(DMLMessage::ToggleShowNick).await;
             }
             if cmds.back {
-                let p = self.cm.bvideo_info.read().await.current_page.saturating_sub(1);
-                let p = if p == 0 { 1 } else { p };
-                let _ = self.mtx.send(DMLMessage::GoToBVPage(p)).await;
+                let p = self.cm.bvideo_info.borrow().current_page.saturating_sub(1);
+                self.cm.bvideo_info.borrow_mut().current_page = if p == 0 { 1 } else { p };
+                let _ = self.mtx.send(DMLMessage::PlayVideo).await;
             }
             if cmds.next {
-                let p = self.cm.bvideo_info.read().await.current_page.saturating_add(1);
-                let _ = self.mtx.send(DMLMessage::GoToBVPage(p)).await;
+                self.cm.bvideo_info.borrow_mut().current_page += 1;
+                let _ = self.mtx.send(DMLMessage::PlayVideo).await;
             }
             if cmds.fps {
                 let fps: u64 = {
-                    let df = self.cm.display_fps.read().await;
+                    let df = self.cm.display_fps.get();
                     let i = df.1 as usize % 3;
                     [df.0, 0u64, 60u64][i]
                 };
@@ -280,63 +266,50 @@ impl MpvControl {
                         ))
                         .await?;
                 }
-                self.cm.display_fps.write().await.1 += 1;
+                let df = self.cm.display_fps.get();
+                self.cm.display_fps.set((df.0, df.1.saturating_add(1)));
             }
         }
         Ok(())
     }
 
-    pub async fn run_normal(self: &Arc<Self>) -> Result<()> {
+    pub async fn run_normal(&self) -> Result<()> {
         let mut mpv = self.create_mpv_command().await?.kill_on_drop(true).spawn().unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
         let s = UnixStream::connect(self.ipc_manager.get_mpv_socket_path()).await?;
         let (usocket_read, mut usocket_write) = tokio::io::split(s);
-        let s1 = self.clone();
-        tokio::task::spawn_local(async move {
-            while let Ok(s) = s1.mpv_command_rx.recv().await {
+        let mpv_rpc_write_task = async {
+            while let Ok(s) = self.mpv_command_rx.recv().await {
                 let _ = usocket_write.write_all(s.as_bytes()).await;
             }
-        });
-        let s2 = self.clone();
-        tokio::task::spawn_local(async move {
-            let mut last_time = chrono::Utc::now().timestamp_millis();
+        };
+        let mpv_rpc_read_task = async {
+            let mut tasks = futures::stream::FuturesUnordered::new();
             let mut reader = tokio::io::BufReader::new(usocket_read).lines();
-            while let Some(line) = reader.next_line().await? {
-                info!("mpv rpc: {}", &line);
-                let _ = s2.handle_mpv_event(&line, &mut last_time).await;
+            loop {
+                tokio::select! {
+                    Some(_) = tasks.next() => {},
+                    msg = reader.next_line() => {
+                        match msg {
+                            Ok(it) => { tasks.push(self.handle_mpv_event(it.unwrap_or("".to_string()))); },
+                            Err(_) => { return; },
+                        }
+                    }
+                }
             }
-            Ok::<(), Box<dyn std::error::Error>>(())
-        });
+        };
         let _ = self.init_mpv_rpc().await;
-        if !matches!(self.cm.site, crate::config::Site::BiliVideo) {
-            let _ = self.reload_video().await;
+        // let _ = self.reload_video().await;
+        tokio::select! {
+            _ = mpv_rpc_write_task => {},
+            _ = mpv_rpc_read_task => {},
+            _ = mpv.wait() => {},
         }
-        mpv.wait().await?;
         Ok(())
     }
 
-    pub async fn run_android(self: &Arc<Self>) -> Result<()> {
-        'l1: loop {
-            tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-            let mut ns = Command::new("sh")
-                .arg("-c")
-                .arg(format!(
-                    "netstat -apn | grep ffmpeg | grep {}",
-                    self.ipc_manager.get_f2m_socket_path().trim_start_matches("tcp://")
-                ))
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .unwrap();
-            let o = ns.stdout.take().unwrap();
-            let mut reader = tokio::io::BufReader::new(o).lines();
-            while let Some(line) = reader.next_line().await.unwrap() {
-                if line.contains(self.ipc_manager.get_f2m_socket_path().trim_start_matches("tcp://")) {
-                    break 'l1;
-                }
-            }
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-        Command::new("termux-open").arg(self.ipc_manager.get_f2m_socket_path()).spawn().unwrap();
+    pub async fn run_android(&self) -> Result<()> {
+        // Command::new("termux-open").arg(self.ipc_manager.get_f2m_socket_path()).spawn().unwrap();
         while let Ok(s) = self.mpv_command_rx.recv().await {
             if s.contains("quit") {
                 break;
@@ -345,10 +318,10 @@ impl MpvControl {
         Ok(())
     }
 
-    pub async fn run(self: &Arc<Self>) -> Result<()> {
+    pub async fn run(&self) -> Result<()> {
         match self.cm.run_mode {
             crate::config::RunMode::Play => {
-                if cfg!(target_os = "android") {
+                if self.cm.plat == Platform::Android {
                     self.run_android().await?;
                 } else {
                     self.run_normal().await?;

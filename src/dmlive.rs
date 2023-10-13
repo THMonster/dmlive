@@ -2,179 +2,189 @@ use crate::{
     config::ConfigManager, danmaku::Danmaku, ffmpeg::FfmpegControl, ipcmanager::IPCManager, mpv::MpvControl,
     streamer::Streamer, streamfinder::StreamFinder,
 };
-use async_channel::Receiver;
-use log::{info, warn};
-use std::{ops::Deref, sync::Arc};
-use tokio::sync::RwLock;
+use async_channel::{Receiver, Sender};
+use futures::StreamExt;
+use log::info;
+use std::rc::Rc;
+use tokio::time::Duration;
 
+#[allow(unused)]
 pub enum DMLMessage {
     SetFontScale(f64),
     SetFontAlpha(f64),
     SetDMSpeed(u64),
-    GoToBVPage(usize),
+    PlayVideo,
     SetVideoInfo((u64, u64, u64)),
     ToggleShowNick,
+    FfmpegOutputReady,
     RequestRestart,
     RequestExit,
 }
 
-enum DMLState {
-    Running,
-    Exiting,
-}
-
+#[allow(unused)]
 pub struct DMLive {
-    ipc_manager: Arc<IPCManager>,
-    cm: Arc<ConfigManager>,
-    mc: Arc<MpvControl>,
-    fc: Arc<FfmpegControl>,
-    sf: Arc<StreamFinder>,
-    st: Arc<Streamer>,
-    dm: Arc<Danmaku>,
+    ipc_manager: Rc<IPCManager>,
+    cm: Rc<ConfigManager>,
+    mc: Rc<MpvControl>,
+    fc: Rc<FfmpegControl>,
+    sf: Rc<StreamFinder>,
+    st: Rc<Streamer>,
+    dm: Rc<Danmaku>,
     mrx: Receiver<DMLMessage>,
-    state: RwLock<DMLState>,
+    mtx: Sender<DMLMessage>,
 }
 
 impl DMLive {
-    pub async fn new(cm: Arc<ConfigManager>) -> Self {
-        let mut im = IPCManager::new(cm.clone());
-        im.run().await.unwrap();
-        let im = Arc::new(im);
+    pub async fn new(cm: Rc<ConfigManager>, im: Rc<IPCManager>) -> Self {
         let (mtx, mrx) = async_channel::unbounded();
-        let mc = Arc::new(MpvControl::new(cm.clone(), im.clone(), mtx.clone()));
-        let fc = Arc::new(FfmpegControl::new(cm.clone(), im.clone(), mtx.clone()));
-        let sf = Arc::new(StreamFinder::new(cm.clone(), im.clone(), mtx.clone()));
-        let st = Arc::new(Streamer::new(cm.clone(), im.clone(), mtx.clone()));
-        let dm = Arc::new(Danmaku::new(cm.clone(), im.clone(), mtx));
+        let mc = Rc::new(MpvControl::new(cm.clone(), im.clone(), mtx.clone()));
+        let fc = Rc::new(FfmpegControl::new(cm.clone(), im.clone(), mtx.clone()));
+        let sf = Rc::new(StreamFinder::new(cm.clone(), im.clone(), mtx.clone()));
+        let st = Rc::new(Streamer::new(cm.clone(), im.clone(), mtx.clone()));
+        let dm = Rc::new(Danmaku::new(cm.clone(), im.clone(), mtx.clone()));
         DMLive {
             ipc_manager: im,
             cm,
             mrx,
+            mtx,
             mc,
             fc,
             sf,
             st,
             dm,
-            state: RwLock::new(DMLState::Running),
         }
     }
 
-    pub async fn run(self: &Arc<Self>) {
-        let s1 = self.clone();
-        tokio::task::spawn_local(async move {
-            s1.dispatch().await;
-        });
-        let s2 = self.clone();
-        tokio::task::spawn_local(async move {
-            s2.restart().await;
-        });
-        let s3 = self.clone();
-        tokio::task::spawn_local(async move {
+    pub async fn run(&self) {
+        let signal_task = async {
             let _ = tokio::signal::ctrl_c().await;
-            s3.quit().await;
-        });
-        let _ = self.mc.run().await;
+        };
+        tokio::select! {
+            _ = self.dispatch_task() => {},
+            _ = self.mc.run() => {},
+            _ = self.play() => {},
+            _ = signal_task => {},
+        }
         match self.ipc_manager.stop().await {
             Ok(_) => {}
             Err(err) => info!("ipc manager stop error: {}", err),
         };
     }
 
-    pub async fn dispatch(self: &Arc<Self>) {
+    async fn dispatch_task(&self) {
+        let mut tasks = futures::stream::FuturesUnordered::new();
+
         loop {
-            match self.mrx.recv().await.unwrap() {
-                DMLMessage::SetFontScale(fs) => {
-                    self.dm.set_font_size(fs).await;
-                }
-                DMLMessage::SetFontAlpha(fa) => {
-                    self.dm.set_font_alpha(fa).await;
-                }
-                DMLMessage::SetDMSpeed(sp) => {
-                    self.dm.set_speed(sp).await;
-                }
-                DMLMessage::ToggleShowNick => {
-                    self.dm.toggle_show_nick().await;
-                }
-                DMLMessage::RequestRestart => {
-                    self.restart().await;
-                }
-                DMLMessage::RequestExit => {
-                    self.quit().await;
-                }
-                DMLMessage::SetVideoInfo((w, h, pts)) => {
-                    info!("video info: w {} h {} pts {}", w, h, pts);
-                    let s1 = self.clone();
-                    // danmaku task
-                    tokio::task::spawn_local(async move {
-                        if matches!(s1.cm.site, crate::config::Site::BiliVideo) {
-                            let _ = s1.dm.run_bilivideo(16.0 * h as f64 / w as f64 / 9.0).await;
-                        } else {
-                            let _ = s1.dm.run(16.0 * h as f64 / w as f64 / 9.0, pts).await;
-                        }
-                    });
-                }
-                DMLMessage::GoToBVPage(p) => {
-                    match self.sf.run_bilivideo(p).await {
-                        Ok((title, urls)) => {
-                            let u1 = urls[0].to_string();
-                            self.dm.set_bili_video_cid(&u1).await;
-                            let s2 = self.clone();
-                            tokio::task::spawn_local(async move {
-                                let _ = s2.mc.reload_edl_video(&urls, &title).await;
-                            });
-                        }
-                        Err(_) => {}
-                    };
+            tokio::select! {
+                Some(_) = tasks.next() => {},
+                msg = self.mrx.recv() => {
+                    match msg {
+                        Ok(it) => { tasks.push(self.dispatch(it)) },
+                        Err(_) => { return; },
+                    }
                 }
             }
         }
     }
 
-    pub async fn restart(self: &Arc<Self>) {
-        if matches!(self.state.read().await.deref(), DMLState::Exiting) {
-            return;
-        }
-        let (title, urls) = match self.sf.run().await {
-            Ok(it) => it,
-            Err(_) => {
-                self.quit().await;
-                return;
+    async fn dispatch(&self, msg: DMLMessage) {
+        match msg {
+            DMLMessage::SetFontScale(fs) => {
+                self.dm.set_font_size(fs).await;
             }
-        };
-        self.cm.set_stream_type(&urls[0]).await;
-        let u1 = urls[0].to_string();
-        self.dm.set_bili_video_cid(&u1).await;
-        let s2 = self.clone();
-        let urls1 = urls.clone();
-        // ffmpeg task
-        tokio::task::spawn_local(async move {
-            if matches!(s2.cm.site, crate::config::Site::BiliVideo)
-                && matches!(s2.cm.run_mode, crate::config::RunMode::Play)
-            {
-                let _ = s2.mc.reload_edl_video(&urls1, &title).await;
-            } else {
-                let _ = s2.fc.run(&title, &urls1).await;
-                info!("ffmpeg exit");
-                if matches!(s2.cm.site, crate::config::Site::BiliVideo) {
-                    // bilibili video download completed, then quit
-                    let _ = s2.mc.quit().await;
+            DMLMessage::SetFontAlpha(fa) => {
+                self.dm.set_font_alpha(fa).await;
+            }
+            DMLMessage::SetDMSpeed(sp) => {
+                self.dm.set_speed(sp).await;
+            }
+            DMLMessage::ToggleShowNick => {
+                self.dm.toggle_show_nick().await;
+            }
+            DMLMessage::RequestRestart => {
+                let _ = self.fc.quit().await;
+            }
+            DMLMessage::RequestExit => {
+                // self.quit().await;
+            }
+            DMLMessage::SetVideoInfo((w, h, pts)) => {
+                info!("video info: w {} h {} pts {}", w, h, pts);
+                // danmaku task
+                if matches!(self.cm.site, crate::config::Site::BiliVideo) {
+                    let _ = self.dm.run_bilivideo(16.0 * h as f64 / w as f64 / 9.0).await;
                 } else {
-                    s2.restart().await;
+                    let _ = self.dm.run(16.0 * h as f64 / w as f64 / 9.0, pts).await;
                 }
             }
-        });
-        let s3 = self.clone();
-        // streamer task
-        tokio::task::spawn_local(async move {
-            if !matches!(s3.cm.site, crate::config::Site::BiliVideo) {
-                let _ = s3.st.run(urls).await;
-                let _ = s3.fc.quit_new().await;
+            DMLMessage::PlayVideo => {
+                let _ = self.play_video().await.map_err(|e| info!("play video error: {}", e));
             }
-        });
+            DMLMessage::FfmpegOutputReady => {
+                info!("ffmpeg output ready");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                match self.cm.run_mode {
+                    crate::config::RunMode::Play => {
+                        let _ = self.mc.reload_video().await;
+                    }
+                    crate::config::RunMode::Record => {
+                        if self.cm.http_address.is_none() {
+                            let _ = self.fc.write_record_task().await;
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    pub async fn quit(self: &Arc<Self>) {
-        *self.state.write().await = DMLState::Exiting;
-        let _ = self.mc.quit().await;
+    pub async fn play(&self) -> anyhow::Result<()> {
+        loop {
+            match self.cm.run_mode {
+                crate::config::RunMode::Play => {
+                    if matches!(self.cm.site, crate::config::Site::BiliVideo) {
+                        self.play_video().await?;
+                        tokio::time::sleep(Duration::from_secs(u64::MAX)).await;
+                    } else {
+                        self.play_live().await?;
+                    }
+                }
+                crate::config::RunMode::Record => {
+                    self.play_live().await?;
+                    if matches!(self.cm.site, crate::config::Site::BiliVideo) {
+                        return Err(anyhow::anyhow!("recording finished"));
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(1000)).await;
+        }
+        // Ok(())
+    }
+
+    pub async fn play_live(&self) -> anyhow::Result<()> {
+        let (title, urls) = self.sf.run().await?;
+        self.cm.set_stream_type(&urls[0]);
+        self.cm.title.borrow_mut().clear();
+        self.cm.title.borrow_mut().push_str(&title);
+        self.dm.set_bili_video_cid(&urls[0]).await;
+        let ff_task = async {
+            self.fc.run(&urls).await?;
+            anyhow::Ok(())
+        };
+        let streamer_task = async {
+            let _ = self.st.run(&urls).await.map_err(|e| info!("streamer error: {}", e));
+            self.fc.quit().await?;
+            anyhow::Ok(())
+        };
+        let (_ff_res, _st_res) = tokio::join!(ff_task, streamer_task);
+        Ok(())
+    }
+
+    pub async fn play_video(&self) -> anyhow::Result<()> {
+        let (title, urls) = self.sf.run().await?;
+        self.cm.set_stream_type(&urls[0]);
+        self.cm.title.borrow_mut().clear();
+        self.cm.title.borrow_mut().push_str(&title);
+        self.dm.set_bili_video_cid(&urls[0]).await;
+        self.mc.reload_edl_video(&urls).await?;
+        Ok(())
     }
 }
