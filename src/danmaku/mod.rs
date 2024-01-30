@@ -282,12 +282,12 @@ impl Danmaku {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(200));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         socket.write_all(&mkv_header::get_mkv_header()).await?;
+        let mut printed = false;
         'l1: loop {
             while let Ok(it) = rx.try_recv() {
                 dm_queue.push_back(it);
             }
             let mut launch = true;
-            let mut printed = false;
             while launch {
                 let (co, ni, da) = dm_queue.get(0).ok_or_else(|| launch = false).unwrap_or(&empty_dm);
                 if !da.is_empty() && !printed {
@@ -311,6 +311,8 @@ impl Danmaku {
                         info!("danmaku send error: {}", &e);
                         if e.to_string().contains("socket error") {
                             break 'l1;
+                        } else {
+                            launch = false;
                         }
                     }
                 };

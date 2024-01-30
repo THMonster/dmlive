@@ -100,7 +100,7 @@ impl Bilibili {
         let j: serde_json::Value = serde_json::from_str(re.captures(&resp).ok_or_else(|| dmlerr!())?[1].as_ref())?;
         // println!("{:?}", &j);
         let j =
-            j.pointer("/props/pageProps/dehydratedState/queries/0/state/data/mediaInfo").ok_or_else(|| dmlerr!())?;
+            j.pointer("/props/pageProps/dehydratedState/queries/0/state/data/seasonInfo/mediaInfo").ok_or_else(|| dmlerr!())?;
         let season_type = j.pointer("/season_type").ok_or_else(|| dmlerr!())?.as_i64().unwrap().to_string();
         let eplist = j.pointer("/episodes").ok_or_else(|| dmlerr!())?.as_array().unwrap();
         let epid = url::Url::parse(video_url)?

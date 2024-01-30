@@ -174,7 +174,11 @@ impl DMLive {
             self.fc.quit().await?;
             anyhow::Ok(())
         };
-        let (_ff_res, _st_res) = tokio::join!(ff_task, streamer_task);
+        if matches!(self.cm.site, crate::config::Site::BiliVideo) {
+            ff_task.await?;
+        } else {
+            let (_ff_res, _st_res) = tokio::join!(ff_task, streamer_task);
+        }
         Ok(())
     }
 

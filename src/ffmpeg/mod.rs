@@ -42,14 +42,14 @@ impl FfmpegControl {
             now.format("%F %T")
         );
         let mut cmd = Command::new("ffmpeg");
-        cmd.args(["-y", "-xerror", "-hide_banner", "-nostats", "-nostdin"]);
+        cmd.args(["-y", "-hide_banner", "-nostdin"]);
         cmd.arg("-i");
         cmd.arg(&in_stream);
         cmd.args(["-c", "copy", "-f", "matroska"]);
         cmd.arg(&filename);
         let mut ff = cmd
             .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            // .stderr(std::process::Stdio::null())
             .kill_on_drop(false)
             .spawn()
             .unwrap();
