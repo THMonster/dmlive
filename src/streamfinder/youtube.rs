@@ -120,13 +120,19 @@ impl Youtube {
             .timeout(tokio::time::Duration::from_secs(10))
             .build()?;
         let url = url::Url::parse(room_url)?;
-        let room_url = if url.as_str().contains("youtube.com/channel/") {
-            let cid = url.path_segments().ok_or_else(|| dmlerr!())?.last().ok_or_else(|| dmlerr!())?;
-            format!("https://www.youtube.com/channel/{}/live", &cid)
+        let room_url = if url.as_str().contains("youtube.com/@") {
+            let cid = url
+                .path_segments()
+                .ok_or_else(|| dmlerr!())?
+                .last()
+                .ok_or_else(|| dmlerr!())?
+                .strip_prefix("@")
+                .ok_or_else(|| dmlerr!())?;
+            format!("https://www.youtube.com/@{}/live", &cid)
         } else {
-            for q in url.query_pairs() {
-                if q.0.eq("v") {}
-            }
+            // for q in url.query_pairs() {
+            //     if q.0.eq("v") {}
+            // }
             let vid = url.query_pairs().find(|q| q.0.eq("v")).unwrap().1;
             format!("https://www.youtube.com/watch?v={}", &vid)
         };
@@ -140,8 +146,6 @@ impl Youtube {
             .await?;
         let re = Regex::new(r"ytInitialPlayerResponse\s*=\s*(\{.+?\});.*?</script>").unwrap();
         let j: serde_json::Value = serde_json::from_str(&re.captures(&resp).ok_or_else(|| dmlerr!())?[1])?;
-        // let vid = j.pointer("/videoDetails/videoId").ok_or("gl err b2")?.as_str().unwrap().to_string();
-        // let cid = j.pointer("/videoDetails/channelId").ok_or("gl err b3")?.as_str().unwrap().to_string();
         let title = j.pointer("/videoDetails/title").ok_or_else(|| dmlerr!())?.as_str().unwrap().to_string();
         if !(j.pointer("/videoDetails/isLive").ok_or_else(|| dmlerr!())?.as_bool().unwrap()) {
             return Err(anyhow::anyhow!("not on air!"));

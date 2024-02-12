@@ -83,13 +83,19 @@ impl Youtube {
 
     async fn get_room_info(&self, url: &str, client: &Client) -> anyhow::Result<(String, String)> {
         let url = url::Url::parse(url)?;
-        let room_url = if url.as_str().contains("youtube.com/channel/") {
-            let cid = url.path_segments().ok_or_else(|| dmlerr!())?.last().ok_or_else(|| dmlerr!())?;
-            format!("https://www.youtube.com/channel/{}/live", &cid)
+        let room_url = if url.as_str().contains("youtube.com/@") {
+            let cid = url
+                .path_segments()
+                .ok_or_else(|| dmlerr!())?
+                .last()
+                .ok_or_else(|| dmlerr!())?
+                .strip_prefix("@")
+                .ok_or_else(|| dmlerr!())?;
+            format!("https://www.youtube.com/@{}/live", &cid)
         } else {
-            for q in url.query_pairs() {
-                if q.0.eq("v") {}
-            }
+            // for q in url.query_pairs() {
+            //     if q.0.eq("v") {}
+            // }
             let vid = url.query_pairs().find(|q| q.0.eq("v")).unwrap().1;
             format!("https://www.youtube.com/watch?v={}", &vid)
         };
