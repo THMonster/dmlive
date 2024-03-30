@@ -78,8 +78,8 @@ impl Huya {
         let mut query: HashMap<String, String> = form_urlencoded::parse(anti_code.as_bytes()).into_owned().collect();
 
         let uid = Self::gen_n_number(13);
-        query.insert("t".to_string(), "100".to_string());
-        query.insert("ctype".to_string(), "huya_live".to_string());
+        query.insert("t".to_string(), "102".to_string());
+        query.insert("ctype".to_string(), "tars_mp".to_string());
 
         let ws_time = format!("{:x}", (chrono::Utc::now().timestamp() + 21600));
         let seq_id = format!(

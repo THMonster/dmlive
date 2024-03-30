@@ -8,6 +8,7 @@ use url::Url;
 
 const BILI_API1: &'static str = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo";
 const BILI_API2: &'static str = "https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom";
+const BILI_API3: &'static str = "https://api.live.bilibili.com/room/v1/Room/playUrl";
 const BILI_APIV: &'static str = "https://api.bilibili.com/x/player/playurl";
 const BILI_APIV_EP: &'static str = "https://api.bilibili.com/pgc/player/web/playurl";
 
@@ -34,10 +35,66 @@ impl Bilibili {
 
         let mut ret = HashMap::new();
         let mut param1 = Vec::new();
-        // room_id=114514&protocol=0,1&format=0,1,2&codec=0,1,2&qn=10000&platform=web&ptype=8&dolby=5&panorama=1
+
         param1.push(("room_id", rid.as_str()));
+        let resp = client.get(BILI_API2).query(&param1).send().await?.json::<serde_json::Value>().await?;
+        resp.pointer("/data/room_info/live_status")
+            .ok_or_else(|| dmlerr!())?
+            .as_i64()
+            .ok_or_else(|| dmlerr!())?
+            .eq(&1)
+            .then(|| 0)
+            .ok_or_else(|| dmlerr!())?;
+        ret.insert(
+            String::from("title"),
+            format!(
+                "{} - {}",
+                resp.pointer("/data/room_info/title").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
+                resp.pointer("/data/anchor_info/base_info/uname")
+                    .ok_or_else(|| dmlerr!())?
+                    .as_str()
+                    .ok_or_else(|| dmlerr!())?
+            ),
+        );
+
+        param1.clear();
+        param1.push(("qn", "20000"));
+        param1.push(("platform", "web"));
+        param1.push(("cid", rid.as_str()));
+        let resp = client
+            .get(BILI_API3)
+            .header("Referer", room_url)
+            .query(&param1)
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+        info!("{}", &resp.to_string());
+        let url = resp.pointer("/data/durl/0/url").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?;
+        ret.insert(String::from("url"), url.to_string());
+
+        Ok(ret)
+    }
+
+    #[allow(unused)]
+    pub async fn get_live_new(&self, room_url: &str) -> Result<HashMap<String, String>> {
+        let rid = Url::parse(room_url)?
+            .path_segments()
+            .ok_or_else(|| dmlerr!())?
+            .last()
+            .ok_or_else(|| dmlerr!())?
+            .to_string();
+        let client = reqwest::Client::builder()
+            .user_agent(crate::utils::gen_ua())
+            .connect_timeout(tokio::time::Duration::from_secs(10))
+            .build()?;
+
+        let mut ret = HashMap::new();
+        let mut param1 = Vec::new();
+        // room_id=114514&protocol=0,1&format=0,1,2&codec=0,1,2&qn=10000&platform=web&ptype=8&dolby=5&panorama=1
         // param1.push(("no_playurl", "0"));
         // param1.push(("mask", "1"));
+        param1.push(("room_id", rid.as_str()));
         param1.push(("protocol", "0,1"));
         param1.push(("format", "0,1,2"));
         param1.push(("codec", "0,1"));
@@ -88,6 +145,7 @@ impl Bilibili {
         );
         Ok(ret)
     }
+
     pub async fn get_page_info_ep(
         &self, video_url: &str, mut page: usize,
     ) -> Result<(String, String, String, String, String)> {
@@ -99,8 +157,9 @@ impl Bilibili {
         let re = Regex::new(r"_NEXT_DATA_.+>\s*(\{.+\})\s*<").unwrap();
         let j: serde_json::Value = serde_json::from_str(re.captures(&resp).ok_or_else(|| dmlerr!())?[1].as_ref())?;
         // println!("{:?}", &j);
-        let j =
-            j.pointer("/props/pageProps/dehydratedState/queries/0/state/data/seasonInfo/mediaInfo").ok_or_else(|| dmlerr!())?;
+        let j = j
+            .pointer("/props/pageProps/dehydratedState/queries/0/state/data/seasonInfo/mediaInfo")
+            .ok_or_else(|| dmlerr!())?;
         let season_type = j.pointer("/season_type").ok_or_else(|| dmlerr!())?.as_i64().unwrap().to_string();
         let eplist = j.pointer("/episodes").ok_or_else(|| dmlerr!())?.as_array().unwrap();
         let epid = url::Url::parse(video_url)?
