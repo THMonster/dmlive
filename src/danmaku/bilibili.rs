@@ -14,7 +14,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message::Binary};
 
 use crate::dmlerr;
 
-const API_BUVID: &'static str = "https://data.bilibili.com/v/";
+const API_BUVID: &'static str = "https://api.bilibili.com/x/frontend/finger/spi";
 const API_ROOMINIT: &'static str = "https://api.live.bilibili.com/room/v1/Room/room_init";
 const API_DMINFO: &'static str = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo";
 const WS_HEARTBEAT: &'static [u8] = b"\x00\x00\x00\x1f\x00\x10\x00\x01\x00\x00\x00\x02\x00\x00\x00\x01\x5b\x6f\x62\x6a\x65\x63\x74\x20\x4f\x62\x6a\x65\x63\x74\x5d";
@@ -37,13 +37,9 @@ impl Bilibili {
     }
 
     async fn get_buvid(&self, client: &reqwest::Client) -> anyhow::Result<String> {
-        let resp = client.get(API_BUVID).send().await?;
-        for c in resp.cookies() {
-            if c.name().eq("buvid3") {
-                return Ok(c.value().to_string().to_string());
-            }
-        }
-        Err(anyhow::anyhow!("get bvuid failed!"))
+        let resp = client.get(API_BUVID).send().await?.json::<serde_json::Value>().await?;
+        let buvid3 = resp.pointer("/data/b_3").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?;
+        return Ok(buvid3.to_string());
     }
 
     async fn get_dm_token(&self, client: &reqwest::Client, url: &str, rid: &str) -> anyhow::Result<String> {
