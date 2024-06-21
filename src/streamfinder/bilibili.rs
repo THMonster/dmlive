@@ -314,6 +314,9 @@ impl Bilibili {
             param1.push(("cid", cid.as_str()));
             param1.push(("bvid", bvid.as_str()));
             param1.push(("fnval", "3024"));
+            if cookies.is_empty() {
+                param1.push(("try_look", "1"));
+            }
             let client = reqwest::Client::builder()
                 .user_agent(crate::utils::gen_ua_safari())
                 .connect_timeout(tokio::time::Duration::from_secs(10))
