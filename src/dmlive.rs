@@ -19,6 +19,7 @@ pub enum DMLMessage {
     FfmpegOutputReady,
     RequestRestart,
     RequestExit,
+    StreamReady,
 }
 
 #[allow(unused)]
@@ -113,8 +114,13 @@ impl DMLive {
                 if matches!(self.cm.site, crate::config::Site::BiliVideo) {
                     let _ = self.dm.run_bilivideo(16.0 * h as f64 / w as f64 / 9.0).await;
                 } else {
-                    let _ = self.dm.run(16.0 * h as f64 / w as f64 / 9.0, pts).await;
+                    self.dm.set_ratio_scale(16.0 * h as f64 / w as f64 / 9.0);
+                    // let _ = self.dm.run(16.0 * h as f64 / w as f64 / 9.0, pts).await;
                 }
+            }
+            DMLMessage::StreamReady => {
+                info!("stream ready");
+                let _ = self.dm.run().await;
             }
             DMLMessage::PlayVideo => {
                 let _ = self.play_video().await.map_err(|e| info!("play video error: {}", e));

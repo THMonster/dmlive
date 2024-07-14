@@ -61,17 +61,17 @@ impl IPCManager {
     }
 
     async fn init_danmaku(&mut self) -> Result<()> {
-        if self.cm.plat == Platform::Linux {
-            let dml = UnixListener::bind(format!(
-                "{}/dml-{}-dm",
-                &self.base_socket_dir, &self.base_uuid
-            ))?;
-            self.danmaku_unix_listener = Some(dml);
-        } else {
-            let (dml, p) = Self::get_tcp_listener().await;
-            self.danmaku_port = p;
-            self.danmaku_tcp_listener = Some(dml);
-        }
+        // if self.cm.plat == Platform::Android {
+        //     let dml = UnixListener::bind(format!(
+        //         "{}/dml-{}-dm",
+        //         &self.base_socket_dir, &self.base_uuid
+        //     ))?;
+        //     self.danmaku_unix_listener = Some(dml);
+        // } else {
+        let (dml, p) = Self::get_tcp_listener().await;
+        self.danmaku_port = p;
+        self.danmaku_tcp_listener = Some(dml);
+        // }
         Ok(())
     }
 
@@ -109,20 +109,8 @@ impl IPCManager {
     }
 
     pub fn get_f2m_socket_path(&self) -> String {
-        // if self.plat == 0 {
-        //     format!(
-        //         "unix://{}/dml-{}-f2m",
-        //         &self.base_socket_dir, &self.base_uuid
-        //     )
-        // } else {
         format!("tcp://127.0.0.1:{}", &self.f2m_port)
-        // }
     }
-
-    // pub fn get_stream_socket_path(&self) -> String {
-    //     // format!("unix://{}/dml-{}-s", &self.base_socket_dir, &self.base_uuid)
-    //     format!("tcp://127.0.0.1:{}", &self.stream_port)
-    // }
 
     pub fn get_video_socket_path(&self) -> String {
         format!("tcp://127.0.0.1:{}", &self.video_port)
@@ -133,24 +121,24 @@ impl IPCManager {
     }
 
     pub fn get_danmaku_socket_path(&self) -> String {
-        if self.cm.plat == Platform::Linux {
-            format!(
-                "unix://{}/dml-{}-dm",
-                &self.base_socket_dir, &self.base_uuid
-            )
-        } else {
-            format!("tcp://127.0.0.1:{}", &self.danmaku_port)
-        }
+        // if self.cm.plat == Platform::Linux {
+        //     format!(
+        //         "unix://{}/dml-{}-dm",
+        //         &self.base_socket_dir, &self.base_uuid
+        //     )
+        // } else {
+        format!("tcp://127.0.0.1:{}", &self.danmaku_port)
+        // }
     }
 
     pub async fn get_danmaku_socket(&self) -> Result<Box<dyn DMLStream>> {
-        if self.cm.plat == Platform::Linux {
-            let (s, _) = self.danmaku_unix_listener.as_ref().ok_or_else(|| dmlerr!())?.accept().await?;
-            Ok(Box::new(s))
-        } else {
-            let (s, _) = self.danmaku_tcp_listener.as_ref().ok_or_else(|| dmlerr!())?.accept().await?;
-            Ok(Box::new(s))
-        }
+        // if self.cm.plat == Platform::Linux {
+        //     let (s, _) = self.danmaku_unix_listener.as_ref().ok_or_else(|| dmlerr!())?.accept().await?;
+        //     Ok(Box::new(s))
+        // } else {
+        let (s, _) = self.danmaku_tcp_listener.as_ref().ok_or_else(|| dmlerr!())?.accept().await?;
+        Ok(Box::new(s))
+        // }
     }
 
     pub async fn get_video_socket(&self) -> Result<Box<dyn DMLStream>> {

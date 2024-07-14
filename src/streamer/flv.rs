@@ -50,6 +50,7 @@ impl FLV {
                 resp = resp.header("Cookie", self.cm.bcookie.as_str());
             }
             let mut resp = resp.send().await?;
+            let _ = self.mtx.send(DMLMessage::StreamReady).await;
             while let Some(chunk) = resp.chunk().await? {
                 stream.write_all(&chunk).await?;
                 watch_dog.set(0);

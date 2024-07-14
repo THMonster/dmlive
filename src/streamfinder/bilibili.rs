@@ -70,7 +70,12 @@ impl Bilibili {
             .json::<serde_json::Value>()
             .await?;
         info!("{}", &resp.to_string());
-        let url = resp.pointer("/data/durl/0/url").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?;
+        let url = match resp.pointer("/data/durl/0/url").ok_or_else(|| dmlerr!()) {
+            Ok(it) => it.as_str().unwrap(),
+            Err(_) => {
+                return self.get_live_new(room_url).await;
+            }
+        };
         ret.insert(String::from("url"), url.to_string());
 
         Ok(ret)

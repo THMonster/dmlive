@@ -114,6 +114,10 @@ impl Danmaku {
             let _ = self.cm.write_config().await;
         }
     }
+    
+    pub fn set_ratio_scale(&self, ratio_scale: f64) {
+        self.ratio_scale.set(ratio_scale);
+    }
 
     pub async fn set_bili_video_cid(&self, cid: &str) {
         let mut bvc = self.bili_video_cid.borrow_mut();
@@ -408,9 +412,9 @@ impl Danmaku {
         Ok(())
     }
 
-    pub async fn run(&self, ratio_scale: f64, _start_pts: u64) -> Result<()> {
+    // pub async fn run(&self, ratio_scale: f64, _start_pts: u64) -> Result<()> {
+    pub async fn run(&self) -> Result<()> {
         self.reset();
-        self.ratio_scale.set(ratio_scale);
         let (dtx, drx) = async_channel::unbounded();
         tokio::select! {
             it = self.danmaku_client_task(dtx) => { it?; },

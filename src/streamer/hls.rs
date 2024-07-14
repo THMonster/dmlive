@@ -17,29 +17,30 @@ pub struct M3U8 {
     target_duration: u64,
     props: HashMap<String, Vec<String>>,
     clips: VecDeque<MediaSegment>,
+    streams: VecDeque<(isize, String)>,
 }
 
-#[allow(unused)]
+// #[allow(unused)]
 pub struct HLS {
-    url: String,
-    header: RefCell<Vec<u8>>,
+    url: RefCell<String>,
     header_done: Cell<bool>,
     ipc_manager: Rc<IPCManager>,
     cm: Rc<ConfigManager>,
     mtx: async_channel::Sender<DMLMessage>,
     watch_dog: Cell<bool>,
+    stream_ready: Cell<bool>,
 }
 
 impl HLS {
     pub fn new(url: String, cm: Rc<ConfigManager>, im: Rc<IPCManager>, mtx: async_channel::Sender<DMLMessage>) -> Self {
         HLS {
-            url,
+            url: RefCell::new(url),
             ipc_manager: im,
             cm,
             mtx,
-            header: RefCell::new(Vec::new()),
             watch_dog: Cell::new(false),
             header_done: Cell::new(false),
+            stream_ready: Cell::new(false),
         }
     }
 
@@ -50,7 +51,9 @@ impl HLS {
         let mut header = "".to_string();
         let mut m3u8_props = HashMap::new();
         let mut m3u8_clips = VecDeque::new();
+        let mut m3u8_streams = VecDeque::new();
         let mut extinf = "".to_string();
+        let mut ext_stream_inf = "".to_string();
         while let Some(line) = lines.next() {
             info!("{}", &line);
             let line = line.trim();
@@ -70,6 +73,9 @@ impl HLS {
                     } else if k.eq("EXTINF") {
                         extinf.clear();
                         extinf.push_str(v);
+                    } else if k.eq("EXT-X-STREAM-INF") {
+                        ext_stream_inf.clear();
+                        ext_stream_inf.push_str(v);
                     } else {
                         m3u8_props
                             .entry(k.to_string())
@@ -79,13 +85,29 @@ impl HLS {
                 }
             } else {
                 if line.is_empty().not() {
-                    let seg = MediaSegment {
-                        skip: if extinf.contains("Amazon") { 1 } else { 0 },
-                        props: HashMap::new(),
-                        url: line.to_owned(),
-                        is_header: false,
-                    };
-                    m3u8_clips.push_back(seg);
+                    if ext_stream_inf.is_empty() {
+                        let seg = MediaSegment {
+                            skip: if extinf.contains("Amazon") { 1 } else { 0 },
+                            props: HashMap::new(),
+                            url: line.to_owned(),
+                            is_header: false,
+                        };
+                        m3u8_clips.push_back(seg);
+                        extinf.clear()
+                    } else {
+                        let bw = ext_stream_inf
+                            .split(',')
+                            .find_map(|a| {
+                                if a.trim().starts_with("BANDWIDTH") {
+                                    return a.split("=").find_map(|x| x.trim().parse::<isize>().ok());
+                                }
+                                None
+                            })
+                            .unwrap_or(1);
+                        m3u8_streams.push_back((bw, line.to_owned()));
+                        td = 1;
+                        sq = 0;
+                    }
                 }
             }
         }
@@ -103,6 +125,7 @@ impl HLS {
             target_duration: td,
             props: m3u8_props,
             clips: m3u8_clips,
+            streams: m3u8_streams,
         };
         // info!("m3u8: {:?}", &m3u8);
         Ok(m3u8)
@@ -112,7 +135,7 @@ impl HLS {
         let url = if clip.starts_with("http") {
             clip.to_string()
         } else {
-            let url = url::Url::parse(&self.url)?;
+            let url = url::Url::parse(&*self.url.borrow())?;
             let url2 = url.join(&clip)?;
             if url2.as_str().contains("?") {
                 url2.as_str().to_string()
@@ -138,6 +161,10 @@ impl HLS {
             let mut resp = client.get(url).header("Connection", "keep-alive").send().await?;
             while let Some(chunk) = resp.chunk().await? {
                 if clip.skip == 0 {
+                    if !self.stream_ready.get() {
+                        self.stream_ready.set(true);
+                        let _ = self.mtx.send(DMLMessage::StreamReady).await;
+                    }
                     stream.write_all(&chunk).await?;
                 }
             }
@@ -150,11 +177,9 @@ impl HLS {
         let mut rx = ss.refresh_rx.borrow_mut();
         while let Some(_) = rx.recv().await {
             let resp = client
-                .get(&self.url)
+                .get(&*self.url.borrow())
                 .timeout(tokio::time::Duration::from_millis(ss.refresh_itvl.get()))
                 .header("Connection", "keep-alive")
-                // maybe bypass twitch ad
-                // .header("X-Forwarded-For", "::1")
                 .send()
                 .await;
             let resp = match resp {
@@ -172,6 +197,11 @@ impl HLS {
                 }
             };
             let m3u8 = Self::decode_m3u8(&m3u8_text)?;
+            if m3u8.streams.is_empty().not() {
+                let (_, s) = m3u8.streams.iter().max_by(|a, b| a.0.cmp(&b.0)).unwrap();
+                let s = self.parse_clip_url(s)?;
+                *self.url.borrow_mut() = s;
+            }
             ss.update_sequence(m3u8.sequence, m3u8.clips, m3u8.target_duration * 1000).await?;
         }
         Ok(())

@@ -9,9 +9,9 @@ edition = "2021"
 tokio = { version = "1", features = ["full"] }
 # tokio-rustls = "0.22"
 # webpki-roots = "*"
-# tokio-tungstenite = { version = "0.18", features = ["rustls-tls"] }
+# tokio-tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"] }
 tokio-tungstenite = { version = "0.23", features = ["native-tls-vendored"] }
-reqwest = { version = "0.12", default-features = false, features = ["brotli", "deflate", "gzip", "json", "native-tls-vendored", "cookies"] }
+reqwest = { version = "0.12", default-features = false, features = ["http2", "brotli", "deflate", "gzip", "json", "native-tls-vendored", "cookies"] }
 log = "0.4"
 env_logger = "0.11"
 clap = { version = "4", features = ["derive"] }

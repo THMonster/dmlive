@@ -31,6 +31,7 @@ pub struct Youtube {
     ipc_manager: Rc<IPCManager>,
     cm: Rc<ConfigManager>,
     mtx: async_channel::Sender<DMLMessage>,
+    stream_ready: Cell<bool>,
 }
 
 impl Youtube {
@@ -46,6 +47,7 @@ impl Youtube {
             ipc_manager: im,
             cm,
             mtx,
+            stream_ready: Cell::new(false),
         }
     }
 
@@ -127,6 +129,10 @@ impl Youtube {
         }
         while let Some(chunk) = resp.chunk().await? {
             if seg.skip == 0 {
+                if !self.stream_ready.get() {
+                    self.stream_ready.set(true);
+                    let _ = self.mtx.send(DMLMessage::StreamReady).await;
+                }
                 stream.write_all(&chunk).await?;
             }
         }

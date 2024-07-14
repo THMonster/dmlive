@@ -6,13 +6,19 @@ use url::Url;
 const TTV_API1: &'static str = "https://gql.twitch.tv/gql";
 const TTV_API2: &'static str = "https://usher.ttvnw.net/api/channel/hls/{channel}.m3u8";
 
-pub struct Twitch {
-}
+pub struct Twitch {}
 
 impl Twitch {
     pub fn new() -> Self {
-        Self {
-        }
+        Self {}
+    }
+
+    pub fn get_info(&self, html: &str) -> anyhow::Result<String> {
+        let re = Regex::new(r#"".+<script type="application/ld\+json">(.+?)</script>.+""#).unwrap();
+        let j = re.captures(html).ok_or_else(|| dmlerr!())?.get(1).ok_or_else(|| dmlerr!())?.as_str();
+        let j: serde_json::Value = serde_json::from_str(j)?;
+        let title = j.pointer("/@graph/0/description").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?;
+        Ok(title.to_string())
     }
 
     pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<String, String>> {
@@ -25,19 +31,16 @@ impl Twitch {
         let client = reqwest::Client::new();
         let mut ret = HashMap::new();
         let resp = client
-            .get(format!("https://m.twitch.tv/{}/profile", &rid))
+            .get(format!("https://www.twitch.tv/{}", &rid))
             .header("User-Agent", crate::utils::gen_ua())
             .header("Accept-Language", "en-US")
-            .header("Referer", "https://m.twitch.tv/")
+            .header("Referer", "https://www.twitch.tv/")
             .send()
             .await?
             .text()
             .await?;
-        let re = Regex::new(r#""BroadcastSettings\}\|\{[^"]+":.+?"title":"(.+?)""#).unwrap();
-        ret.insert(
-            String::from("title"),
-            re.captures(&resp).ok_or_else(|| dmlerr!())?.get(1).ok_or_else(|| dmlerr!())?.as_str().to_string(),
-        );
+        let title = self.get_info(&resp)?;
+        ret.insert(String::from("title"), title);
         let mut param1 = Vec::new();
         let qu = format!(
             r#"{{"query": "query {{ streamPlaybackAccessToken(channelName: \"{}\", params: {{ platform: \"web\", playerBackend:\"mediaplayer\", playerType:\"pulsar\" }}) {{ value, signature }} }}"}}"#,
