@@ -9,8 +9,9 @@ use url::Url;
 const BILI_API1: &'static str = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo";
 const BILI_API2: &'static str = "https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom";
 const BILI_API3: &'static str = "https://api.live.bilibili.com/room/v1/Room/playUrl";
-const BILI_APIV: &'static str = "https://api.bilibili.com/x/player/playurl";
-const BILI_APIV_EP: &'static str = "https://api.bilibili.com/pgc/player/web/playurl";
+// const BILI_APIV: &'static str = "https://api.bilibili.com/x/player/playurl";
+// const BILI_APIV_EP: &'static str = "https://api.bilibili.com/pgc/player/web/playurl";
+const BILI_APIV_EP_LIST: &'static str = "https://api.bilibili.com/pgc/view/web/ep/list";
 
 pub struct Bilibili {
     cm: Rc<ConfigManager>,
@@ -151,28 +152,25 @@ impl Bilibili {
         Ok(ret)
     }
 
-    pub async fn get_page_info_ep(
-        &self, video_url: &str, mut page: usize,
-    ) -> Result<(String, String, String, String, String)> {
+    pub async fn get_page_info_ep(&self, video_url: &str, mut page: usize) -> Result<(String, String, String, String)> {
         let client = reqwest::Client::builder()
-            .user_agent(crate::utils::gen_ua())
+            .user_agent(crate::utils::gen_ua_safari())
             .connect_timeout(tokio::time::Duration::from_secs(10))
             .build()?;
-        let resp = client.get(video_url).header("Referer", video_url).send().await?.text().await?;
-        let re = Regex::new(r"_NEXT_DATA_.+>\s*(\{.+\})\s*<").unwrap();
-        let j: serde_json::Value = serde_json::from_str(re.captures(&resp).ok_or_else(|| dmlerr!())?[1].as_ref())?;
-        // println!("{:?}", &j);
-        let j = j
-            .pointer("/props/pageProps/dehydratedState/queries/0/state/data/seasonInfo/mediaInfo")
-            .ok_or_else(|| dmlerr!())?;
-        let season_type = j.pointer("/season_type").ok_or_else(|| dmlerr!())?.as_i64().unwrap().to_string();
-        let eplist = j.pointer("/episodes").ok_or_else(|| dmlerr!())?.as_array().unwrap();
         let epid = url::Url::parse(video_url)?
             .path_segments()
             .ok_or_else(|| dmlerr!())?
             .last()
             .ok_or_else(|| dmlerr!())?
             .to_string();
+        let mut param1 = Vec::new();
+        if epid.starts_with("ep") {
+            param1.push(("ep_id", epid.replace("ep", "")));
+        } else {
+            param1.push(("season_id", epid.replace("ss", "")));
+        }
+        let resp = client.get(BILI_APIV_EP_LIST).query(&param1).send().await?.json::<serde_json::Value>().await?;
+        let eplist = resp.pointer("/result/episodes").ok_or_else(|| dmlerr!())?.as_array().unwrap();
         if page == 0 {
             page = 1;
             if epid.starts_with("ep") {
@@ -195,30 +193,16 @@ impl Bilibili {
 
         let bvid = ep.pointer("/bvid").ok_or_else(|| dmlerr!())?.as_str().unwrap().to_string();
         let cid = ep.pointer("/cid").ok_or_else(|| dmlerr!())?.as_i64().unwrap().to_string();
-        let subtitle = ep.pointer("/long_title").ok_or_else(|| dmlerr!())?.as_str().unwrap().to_string();
-        let title = j.pointer("/title").ok_or_else(|| dmlerr!())?.as_str().unwrap().to_string();
-        let title_number = ep.pointer("/titleFormat").ok_or_else(|| dmlerr!())?.as_str().unwrap().to_string();
-        let referer = ep.pointer("/link").ok_or_else(|| dmlerr!())?.as_str().unwrap().to_string();
+        let title = ep.pointer("/share_copy").ok_or_else(|| dmlerr!())?.as_str().unwrap().to_string();
+        let link = ep.pointer("/link").ok_or_else(|| dmlerr!())?.as_str().unwrap().to_string();
 
-        Ok((
-            bvid,
-            cid,
-            format!("{} - {} - {}: {}", &title, page, &title_number, &subtitle),
-            referer,
-            season_type,
-        ))
+        Ok((bvid, cid, format!("{} - {}", &title, page), link))
     }
 
-    pub async fn get_page_info(&self, video_url: &str, mut page: usize) -> Result<(String, String, String, String)> {
-        let client = reqwest::Client::builder()
-            .user_agent(crate::utils::gen_ua())
-            .connect_timeout(tokio::time::Duration::from_secs(10))
-            .build()?;
-        let resp = client.get(video_url).header("Referer", video_url).send().await?;
-        let resp = resp.text().await?;
+    pub async fn get_page_info(&self, html: &str, mut page: usize) -> Result<(String, String, String, String)> {
         let re = Regex::new(r"__INITIAL_STATE__=(\{.+?\});").unwrap();
         let j: serde_json::Value =
-            serde_json::from_str(re.captures(&resp).ok_or_else(|| dmlerr!())?[1].to_string().as_ref())?;
+            serde_json::from_str(re.captures(&html).ok_or_else(|| dmlerr!())?[1].to_string().as_ref())?;
         let bvid = j.pointer("/videoData/bvid").ok_or_else(|| dmlerr!())?.as_str().unwrap().to_string();
         let title = j.pointer("/videoData/title").ok_or_else(|| dmlerr!())?.as_str().unwrap();
         let artist = j.pointer("/videoData/owner/name").ok_or_else(|| dmlerr!())?.as_str().unwrap().to_string();
@@ -247,117 +231,74 @@ impl Bilibili {
     }
 
     pub async fn get_video(&self, page: usize) -> Result<Vec<String>> {
+        let f1 = |j: &serde_json::Value, ret: &mut Vec<_>| -> _ {
+            let mut videos = HashMap::new();
+            let mut audios = HashMap::new();
+            for ele in j.pointer("/dash/video").ok_or_else(|| dmlerr!())?.as_array().unwrap() {
+                let mut id = ele.pointer("/id").ok_or_else(|| dmlerr!())?.as_u64().unwrap() * 10;
+                if ele.pointer("/codecid").ok_or_else(|| dmlerr!())?.as_u64().eq(&Some(7)) {
+                    id += 1;
+                }
+                videos.insert(
+                    id,
+                    ele.pointer("/base_url").ok_or_else(|| dmlerr!())?.as_str().unwrap(),
+                );
+            }
+            for ele in j.pointer("/dash/audio").ok_or_else(|| dmlerr!())?.as_array().unwrap() {
+                audios.insert(
+                    ele.pointer("/id").ok_or_else(|| dmlerr!())?.as_u64().unwrap(),
+                    ele.pointer("/base_url").ok_or_else(|| dmlerr!())?.as_str().unwrap(),
+                );
+            }
+            if let Some(ele) = j.pointer("/dash/flac/audio") {
+                audios.insert(
+                    ele.pointer("/id").ok_or_else(|| dmlerr!())?.as_u64().unwrap() + 100,
+                    ele.pointer("/base_url").ok_or_else(|| dmlerr!())?.as_str().unwrap(),
+                );
+            }
+            ret.push(videos.iter().max_by_key(|x| x.0).unwrap().1.to_string());
+            ret.push(audios.iter().max_by_key(|x| x.0).unwrap().1.to_string());
+            anyhow::Ok(())
+        };
         let cookies = if self.cm.cookies_from_browser.is_empty() {
             self.cm.bcookie.clone()
         } else {
             get_cookies_from_browser(&self.cm.cookies_from_browser, ".bilibili.com").await?
         };
         let mut ret: Vec<String> = Vec::new();
+        let client = reqwest::Client::builder()
+            .user_agent(crate::utils::gen_ua_safari())
+            .connect_timeout(tokio::time::Duration::from_secs(10))
+            .build()?;
         if matches!(
             self.cm.bvideo_info.borrow().video_type,
             crate::config::config::BVideoType::Bangumi
         ) {
             let u = self.cm.bvideo_info.borrow().base_url.clone();
-            let (bvid, cid, title, referer, _season_type) = self.get_page_info_ep(&u, page).await?;
+            // let (bvid, cid, title, referer, _season_type) = self.get_page_info_ep(&u, page).await?;
+            let (_bvid, cid, title, link) = self.get_page_info_ep(&u, page).await?;
             ret.push(title);
             ret.push(cid.clone());
-            let mut param1 = Vec::new();
-            param1.push(("cid", cid.as_str()));
-            param1.push(("bvid", bvid.as_str()));
-            // param1.push(("qn", "126"));
-            // param1.push(("fourk", "1"));
-            // param1.push(("fnver", "0"));
-            param1.push(("fnval", "3024"));
-            let client = reqwest::Client::builder()
-                .user_agent(crate::utils::gen_ua_safari())
-                .connect_timeout(tokio::time::Duration::from_secs(10))
-                .build()?;
-            let resp = client
-                .get(BILI_APIV_EP)
-                .header("Referer", &referer)
-                .header("Cookie", cookies)
-                .query(&param1)
-                .send()
-                .await?
-                .json::<serde_json::Value>()
-                .await?;
+            let resp =
+                client.get(&link).header("Referer", &link).header("Cookie", cookies).send().await?.text().await?;
+            let re = Regex::new(r"const\s*playurlSSRData\s*=\s*(\{.+\})").unwrap();
+            let j: serde_json::Value = serde_json::from_str(re.captures(&resp).ok_or_else(|| dmlerr!())?[1].as_ref())?;
             // println!("{:?}", &resp);
-            let j = resp.pointer("/result").ok_or_else(|| dmlerr!())?;
-            let mut videos = HashMap::new();
-            let mut audios = HashMap::new();
-            for ele in j.pointer("/dash/video").ok_or_else(|| dmlerr!())?.as_array().unwrap() {
-                let mut id = ele.pointer("/id").ok_or_else(|| dmlerr!())?.as_u64().unwrap() * 10;
-                if ele.pointer("/codecid").ok_or_else(|| dmlerr!())?.as_u64().eq(&Some(7)) {
-                    id += 1;
-                }
-                videos.insert(
-                    id,
-                    ele.pointer("/base_url").ok_or_else(|| dmlerr!())?.as_str().unwrap(),
-                );
-            }
-            for ele in j.pointer("/dash/audio").ok_or_else(|| dmlerr!())?.as_array().unwrap() {
-                audios.insert(
-                    ele.pointer("/id").ok_or_else(|| dmlerr!())?.as_u64().unwrap(),
-                    ele.pointer("/base_url").ok_or_else(|| dmlerr!())?.as_str().unwrap(),
-                );
-            }
-            if let Some(ele) = j.pointer("/dash/flac/audio") {
-                audios.insert(
-                    ele.pointer("/id").ok_or_else(|| dmlerr!())?.as_u64().unwrap() + 100,
-                    ele.pointer("/base_url").ok_or_else(|| dmlerr!())?.as_str().unwrap(),
-                );
-            }
-            ret.push(videos.iter().max_by_key(|x| x.0).unwrap().1.to_string());
-            ret.push(audios.iter().max_by_key(|x| x.0).unwrap().1.to_string());
+            let j = j.pointer("/result/video_info").ok_or_else(|| dmlerr!())?;
+            // println!("{:?}", &j);
+            f1(&j, &mut ret)?;
         } else {
             let u = self.cm.bvideo_info.borrow().base_url.clone();
-            let (bvid, cid, title, _artist) = self.get_page_info(&u, page).await?;
-            // println!("{} {} {} {}", &bvid, &cid, &title, &artist);
+            let resp = client.get(&u).header("Cookie", cookies).send().await?.text().await?;
+            let (_bvid, cid, title, _artist) = self.get_page_info(&resp, page).await?;
             ret.push(title);
             ret.push(cid.clone());
-            let mut param1 = Vec::new();
-            param1.push(("cid", cid.as_str()));
-            param1.push(("bvid", bvid.as_str()));
-            param1.push(("fnval", "3024"));
-            let client = reqwest::Client::builder()
-                .user_agent(crate::utils::gen_ua_safari())
-                .connect_timeout(tokio::time::Duration::from_secs(10))
-                .build()?;
-            let resp = client
-                .get(BILI_APIV)
-                .header("Cookie", cookies)
-                .query(&param1)
-                .send()
-                .await?
-                .json::<serde_json::Value>()
-                .await?;
-            let j = resp.pointer("/data").ok_or_else(|| dmlerr!())?;
-            let mut videos = HashMap::new();
-            let mut audios = HashMap::new();
-            for ele in j.pointer("/dash/video").ok_or_else(|| dmlerr!())?.as_array().unwrap() {
-                let mut id = ele.pointer("/id").ok_or_else(|| dmlerr!())?.as_u64().unwrap() * 10;
-                if ele.pointer("/codecid").ok_or_else(|| dmlerr!())?.as_u64().eq(&Some(7)) {
-                    id += 1;
-                }
-                videos.insert(
-                    id,
-                    ele.pointer("/base_url").ok_or_else(|| dmlerr!())?.as_str().unwrap(),
-                );
-            }
-            for ele in j.pointer("/dash/audio").ok_or_else(|| dmlerr!())?.as_array().unwrap() {
-                audios.insert(
-                    ele.pointer("/id").ok_or_else(|| dmlerr!())?.as_u64().unwrap(),
-                    ele.pointer("/base_url").ok_or_else(|| dmlerr!())?.as_str().unwrap(),
-                );
-            }
-            if let Some(ele) = j.pointer("/dash/flac/audio") {
-                audios.insert(
-                    ele.pointer("/id").ok_or_else(|| dmlerr!())?.as_u64().unwrap() + 100,
-                    ele.pointer("/base_url").ok_or_else(|| dmlerr!())?.as_str().unwrap(),
-                );
-            }
-            ret.push(videos.iter().max_by_key(|x| x.0).unwrap().1.to_string());
-            ret.push(audios.iter().max_by_key(|x| x.0).unwrap().1.to_string());
+            // println!("{} {} {} {}", &bvid, &cid, &title, &artist);
+            let re = Regex::new(r"window.__playinfo__\s*=\s*(\{.+?\})\s*</script>").unwrap();
+            let j: serde_json::Value =
+                serde_json::from_str(re.captures(&resp).ok_or_else(|| dmlerr!())?[1].to_string().as_ref())?;
+            let j = j.pointer("/data").ok_or_else(|| dmlerr!())?;
+            f1(&j, &mut ret)?;
         }
         Ok(ret)
     }
