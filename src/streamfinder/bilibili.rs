@@ -1,8 +1,9 @@
 use crate::dmlerr;
 use crate::{config::ConfigManager, utils::cookies::get_cookies_from_browser};
 use anyhow::Result;
-use log::info;
+use log::{info, warn};
 use regex::Regex;
+use std::borrow::Borrow;
 use std::{collections::HashMap, rc::Rc};
 use url::Url;
 
@@ -289,7 +290,14 @@ impl Bilibili {
             f1(&j, &mut ret)?;
         } else {
             let u = self.cm.bvideo_info.borrow().base_url.clone();
-            let resp = client.get(&u).header("Cookie", cookies).send().await?.text().await?;
+            let mut param1 = Vec::new();
+            let p = if self.cm.bvideo_info.borrow().current_page == 0 {
+                "1".to_string()
+            } else {
+                self.cm.bvideo_info.borrow().current_page.to_string()
+            };
+            param1.push(("p", p));
+            let resp = client.get(&u).header("Cookie", cookies).query(&param1).send().await?.text().await?;
             let (_bvid, cid, title, _artist) = self.get_page_info(&resp, page).await?;
             ret.push(title);
             ret.push(cid.clone());
