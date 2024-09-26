@@ -80,7 +80,7 @@ impl FfmpegControl {
         // ret.arg("-loglevel").arg("quiet");
         // ret.args(["-probesize", "204800"]);
         // ret.args(["-analyzeduration", "1000000", "-max_delay", "1000000"]);
-        ret.args(["-max_delay", "1000000"]);
+        // ret.args(["-max_delay", "1000000"]);
         match self.cm.stream_type.get() {
             crate::config::StreamType::DASH => {
                 if self.cm.site == Site::BiliVideo {
