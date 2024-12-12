@@ -10,7 +10,7 @@ use url::Url;
 const BILI_API1: &'static str = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo";
 const BILI_API2: &'static str = "https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom";
 const BILI_API3: &'static str = "https://api.live.bilibili.com/room/v1/Room/playUrl";
-// const BILI_APIV: &'static str = "https://api.bilibili.com/x/player/playurl";
+const BILI_APIV: &'static str = "https://api.bilibili.com/x/player/wbi/playurl";
 // const BILI_APIV_EP: &'static str = "https://api.bilibili.com/pgc/player/web/playurl";
 const BILI_APIV_EP_LIST: &'static str = "https://api.bilibili.com/pgc/view/web/ep/list";
 
@@ -297,14 +297,31 @@ impl Bilibili {
                 self.cm.bvideo_info.borrow().current_page.to_string()
             };
             param1.push(("p", p));
-            let resp = client.get(&u).header("Cookie", cookies).query(&param1).send().await?.text().await?;
-            let (_bvid, cid, title, _artist) = self.get_page_info(&resp, page).await?;
+            let resp = client.get(&u).header("Cookie", &cookies).query(&param1).send().await?.text().await?;
+            let (bvid, cid, title, _artist) = self.get_page_info(&resp, page).await?;
             ret.push(title);
             ret.push(cid.clone());
             // println!("{} {} {} {}", &bvid, &cid, &title, &artist);
-            let re = Regex::new(r"window.__playinfo__\s*=\s*(\{.+?\})\s*</script>").unwrap();
-            let j: serde_json::Value =
-                serde_json::from_str(re.captures(&resp).ok_or_else(|| dmlerr!())?[1].to_string().as_ref())?;
+            // let re = Regex::new(r"window.__playinfo__\s*=\s*(\{.+?\})\s*</script>").unwrap();
+            // let j: serde_json::Value =
+            //     serde_json::from_str(re.captures(&resp).ok_or_else(|| dmlerr!())?[1].to_string().as_ref())?;
+            let keys = crate::utils::bili_wbi::get_wbi_keys(&cookies).await?;
+            let params2 = vec![
+                ("bvid", bvid),
+                ("cid", cid),
+                ("qn", String::from("0")),
+                ("fnval", String::from("80")),
+                ("fnver", String::from("0")),
+                ("fourk", String::from("1")),
+            ];
+            let query = crate::utils::bili_wbi::encode_wbi(params2, keys);
+            let j = client
+                .get(format!("{}?{}", BILI_APIV, query))
+                .header("Cookie", &cookies)
+                .send()
+                .await?
+                .json::<serde_json::Value>()
+                .await?;
             let j = j.pointer("/data").ok_or_else(|| dmlerr!())?;
             f1(&j, &mut ret)?;
         }
