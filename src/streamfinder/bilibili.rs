@@ -310,7 +310,7 @@ impl Bilibili {
                 ("bvid", bvid),
                 ("cid", cid),
                 ("qn", String::from("0")),
-                ("fnval", String::from("80")),
+                ("fnval", String::from("848")),
                 ("fnver", String::from("0")),
                 ("fourk", String::from("1")),
             ];

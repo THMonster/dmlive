@@ -71,7 +71,7 @@ fn decrypt_chrome_cookie(data: &mut [u8], key: &[u8; 16]) -> anyhow::Result<Stri
             let pt = Aes128CbcDec::new(key.into(), &[32u8; 16].into())
                 .decrypt_padded_mut::<Pkcs7>(&mut buf)
                 .map_err(|_| anyhow::anyhow!("decryption failed"))?;
-            return Ok(String::from_utf8_lossy(pt).into());
+            return Ok(String::from_utf8_lossy(pt.get(32..).unwrap_or(b"")).into());
         } else {
             return Err(anyhow::anyhow!("a v10 cookie"));
         }
