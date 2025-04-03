@@ -1,14 +1,13 @@
 use crate::dmlerr;
 use crate::{config::ConfigManager, utils::cookies::get_cookies_from_browser};
 use anyhow::Result;
-use log::{info, warn};
+use log::info;
 use regex::Regex;
-use std::borrow::Borrow;
 use std::{collections::HashMap, rc::Rc};
 use url::Url;
 
 const BILI_API1: &'static str = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo";
-const BILI_API2: &'static str = "https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom";
+const BILI_API2: &'static str = "https://api.live.bilibili.com/xlive/web-room/v1/index/getRoomBaseInfo";
 const BILI_API3: &'static str = "https://api.live.bilibili.com/room/v1/Room/playUrl";
 const BILI_APIV: &'static str = "https://api.bilibili.com/x/player/wbi/playurl";
 // const BILI_APIV_EP: &'static str = "https://api.bilibili.com/pgc/player/web/playurl";
@@ -38,9 +37,38 @@ impl Bilibili {
         let mut ret = HashMap::new();
         let mut param1 = Vec::new();
 
-        param1.push(("room_id", rid.as_str()));
+        // let resp = client.get(format!("https://live.bilibili.com/{}", rid.as_str())).send().await?.text().await?;
+        // let re = Regex::new(r"window.__NEPTUNE_IS_MY_WAIFU__\s*=\s*(\{.+?\})\s*</script>").unwrap();
+        // let j: serde_json::Value =
+        //     serde_json::from_str(re.captures(&resp).ok_or_else(|| dmlerr!())?[1].to_string().as_ref())?;
+        // j.pointer("/roomInfoRes/data/room_info/live_status")
+        //     .ok_or_else(|| dmlerr!())?
+        //     .as_i64()
+        //     .ok_or_else(|| dmlerr!())?
+        //     .eq(&1)
+        //     .then(|| 0)
+        //     .ok_or_else(|| dmlerr!())?;
+        // ret.insert(
+        //     String::from("title"),
+        //     format!(
+        //         "{} - {}",
+        //         j.pointer("/roomInfoRes/data/room_info/title")
+        //             .ok_or_else(|| dmlerr!())?
+        //             .as_str()
+        //             .ok_or_else(|| dmlerr!())?,
+        //         j.pointer("/roomInfoRes/data/anchor_info/base_info/uname")
+        //             .ok_or_else(|| dmlerr!())?
+        //             .as_str()
+        //             .ok_or_else(|| dmlerr!())?
+        //     ),
+        // );
+
+        param1.push(("room_ids", rid.as_str()));
+        param1.push(("req_biz", "web_room_componet"));
         let resp = client.get(BILI_API2).query(&param1).send().await?.json::<serde_json::Value>().await?;
-        resp.pointer("/data/room_info/live_status")
+        let j = resp.pointer("/data/by_room_ids").ok_or_else(|| dmlerr!())?.as_object().ok_or_else(|| dmlerr!())?;
+        let j = j.iter().next().ok_or_else(|| dmlerr!())?.1;
+        j.pointer("/live_status")
             .ok_or_else(|| dmlerr!())?
             .as_i64()
             .ok_or_else(|| dmlerr!())?
@@ -51,11 +79,8 @@ impl Bilibili {
             String::from("title"),
             format!(
                 "{} - {}",
-                resp.pointer("/data/room_info/title").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
-                resp.pointer("/data/anchor_info/base_info/uname")
-                    .ok_or_else(|| dmlerr!())?
-                    .as_str()
-                    .ok_or_else(|| dmlerr!())?
+                j.pointer("/title").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
+                j.pointer("/uname").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?
             ),
         );
 
@@ -240,27 +265,52 @@ impl Bilibili {
                 if ele.pointer("/codecid").ok_or_else(|| dmlerr!())?.as_u64().eq(&Some(7)) {
                     id += 1;
                 }
+                let mut ul = Vec::new();
+                ul.push(ele.pointer("/base_url").ok_or_else(|| dmlerr!())?.as_str().unwrap());
+                ele.pointer("/backup_url")
+                    .ok_or_else(|| dmlerr!())?
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .for_each(|x| ul.push(x.as_str().unwrap()));
                 videos.insert(
                     id,
-                    ele.pointer("/base_url").ok_or_else(|| dmlerr!())?.as_str().unwrap(),
+                    ul.iter().find(|&&x| !x.contains("mcdn")).ok_or_else(|| dmlerr!())?.to_string(),
                 );
             }
             for ele in j.pointer("/dash/audio").ok_or_else(|| dmlerr!())?.as_array().unwrap() {
+                let mut ul = Vec::new();
+                ul.push(ele.pointer("/base_url").ok_or_else(|| dmlerr!())?.as_str().unwrap());
+                ele.pointer("/backup_url")
+                    .ok_or_else(|| dmlerr!())?
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .for_each(|x| ul.push(x.as_str().unwrap()));
                 audios.insert(
                     ele.pointer("/id").ok_or_else(|| dmlerr!())?.as_u64().unwrap(),
-                    ele.pointer("/base_url").ok_or_else(|| dmlerr!())?.as_str().unwrap(),
+                    ul.iter().find(|&&x| !x.contains("mcdn")).ok_or_else(|| dmlerr!())?.to_string(),
                 );
             }
             if let Some(ele) = j.pointer("/dash/flac/audio") {
+                let mut ul = Vec::new();
+                ul.push(ele.pointer("/base_url").ok_or_else(|| dmlerr!())?.as_str().unwrap());
+                ele.pointer("/backup_url")
+                    .ok_or_else(|| dmlerr!())?
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .for_each(|x| ul.push(x.as_str().unwrap()));
                 audios.insert(
                     ele.pointer("/id").ok_or_else(|| dmlerr!())?.as_u64().unwrap() + 100,
-                    ele.pointer("/base_url").ok_or_else(|| dmlerr!())?.as_str().unwrap(),
+                    ul.iter().find(|&&x| !x.contains("mcdn")).ok_or_else(|| dmlerr!())?.to_string(),
                 );
             }
             ret.push(videos.iter().max_by_key(|x| x.0).unwrap().1.to_string());
             ret.push(audios.iter().max_by_key(|x| x.0).unwrap().1.to_string());
             anyhow::Ok(())
         };
+
         let cookies = if self.cm.cookies_from_browser.is_empty() {
             self.cm.bcookie.clone()
         } else {

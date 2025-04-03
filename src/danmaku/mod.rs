@@ -224,7 +224,8 @@ impl Danmaku {
         };
         self.read_order.set(self.read_order.get() + 1);
         cluster.write_to_socket(socket).await.map_err(|_| anyhow!("socket error"))?;
-        out_of_channel.not().then(|| {}).ok_or_else(|| anyhow!("channels unavailable"))
+        // out_of_channel.not().then(|| {}).ok_or_else(|| anyhow!("channels unavailable"))
+        Ok(())
     }
 
     pub async fn danmaku_client_task(&self, dtx: async_channel::Sender<(String, String, String)>) -> Result<()> {
@@ -281,7 +282,7 @@ impl Danmaku {
         let now = std::time::Instant::now();
         let mut socket = self.ipc_manager.get_danmaku_socket().await?;
         let mut dm_queue = VecDeque::new();
-        let emoji_re = regex::Regex::new(EMOJI_RE).unwrap();
+        // let emoji_re = regex::Regex::new(EMOJI_RE).unwrap();
         let empty_dm = ("".to_string(), "".to_string(), "".to_string());
         let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(200));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -304,7 +305,7 @@ impl Danmaku {
                         continue;
                     }
                 }
-                let da = emoji_re.replace_all(da, "[em]");
+                // let da = emoji_re.replace_all(da, "[em]");
                 let c_pts = now.elapsed().as_millis() as u64;
                 match self.launch_single_danmaku(co, ni, &da, c_pts, &mut socket).await {
                     Ok(_) => {
