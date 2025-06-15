@@ -21,7 +21,7 @@ impl Twitch {
         Ok(title.to_string())
     }
 
-    pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<String, String>> {
+    pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<&'static str, String>> {
         let rid = Url::parse(room_url)?
             .path_segments()
             .ok_or_else(|| dmlerr!())?
@@ -40,7 +40,7 @@ impl Twitch {
             .text()
             .await?;
         let title = self.get_info(&resp)?;
-        ret.insert(String::from("title"), title);
+        ret.insert("title", title);
         let mut param1 = Vec::new();
         let qu = format!(
             r#"{{"query": "query {{ streamPlaybackAccessToken(channelName: \"{}\", params: {{ platform: \"web\", playerBackend:\"mediaplayer\", playerType:\"pulsar\" }}) {{ value, signature }} }}"}}"#,
@@ -88,7 +88,7 @@ impl Twitch {
         // println!("{}", &resp);
         let re = Regex::new(r#"[\s\S]+?\n(http[^\n]+)"#).unwrap();
         ret.insert(
-            "url".to_string(),
+            "url",
             re.captures(&resp).ok_or_else(|| dmlerr!())?.get(1).ok_or_else(|| dmlerr!())?.as_str().to_string(),
         );
         Ok(ret)

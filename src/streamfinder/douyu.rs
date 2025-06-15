@@ -32,7 +32,7 @@ impl Douyu {
     pub fn new() -> Self {
         Self {}
     }
-    pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<String, String>> {
+    pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<&'static str, String>> {
         let mut ret = HashMap::new();
         let rid = url::Url::parse(room_url)?
             .path_segments()
@@ -143,7 +143,7 @@ impl Douyu {
             .await?;
         // println!("{:?}", &resp);
         ret.insert(
-            String::from("url"),
+            "url",
             format!(
                 "{}/{}",
                 resp.pointer("/data/rtmp_url").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
@@ -159,7 +159,7 @@ impl Douyu {
             .json::<serde_json::Value>()
             .await?;
         ret.insert(
-            String::from("title"),
+            "title",
             format!(
                 "{} - {}",
                 resp.pointer("/room/room_name").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,

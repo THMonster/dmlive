@@ -32,9 +32,12 @@ pub struct HLS {
 }
 
 impl HLS {
-    pub fn new(url: String, cm: Rc<ConfigManager>, im: Rc<IPCManager>, mtx: async_channel::Sender<DMLMessage>) -> Self {
+    pub fn new(
+        stream_info: &HashMap<&str, String>, cm: Rc<ConfigManager>, im: Rc<IPCManager>,
+        mtx: async_channel::Sender<DMLMessage>,
+    ) -> Self {
         HLS {
-            url: RefCell::new(url),
+            url: RefCell::new(stream_info["url"].to_string()),
             ipc_manager: im,
             cm,
             mtx,

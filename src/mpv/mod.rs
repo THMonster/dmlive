@@ -7,6 +7,7 @@ use anyhow::Result;
 use futures::StreamExt;
 use log::info;
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
@@ -57,13 +58,13 @@ impl MpvControl {
         Ok(ret)
     }
 
-    pub async fn reload_edl_video(&self, urls: &Vec<String>) -> Result<()> {
+    pub async fn reload_edl_video(&self, stream_info: &HashMap<&str, String>) -> Result<()> {
         let edl = format!(
             "edl://!no_clip;!no_chapters;%{0}%{1};!new_stream;!no_clip;!no_chapters;%{2}%{3}",
-            urls[2].chars().count(),
-            urls[2],
-            urls[1].chars().count(),
-            urls[1]
+            stream_info["url_a"].chars().count(),
+            stream_info["url_a"],
+            stream_info["url_v"].chars().count(),
+            stream_info["url_v"]
         );
         info!("load video: {}--{}", &edl, self.cm.title.borrow());
         self.mpv_command_tx

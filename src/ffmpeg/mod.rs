@@ -5,6 +5,7 @@ use anyhow::anyhow;
 use anyhow::Result;
 use log::info;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use tokio::io::{AsyncRead, BufReader};
 use tokio::process::ChildStdin;
@@ -27,6 +28,33 @@ impl FfmpegControl {
             mtx,
             ff_stdin: RefCell::new(None),
         }
+    }
+    pub async fn write_danmaku_only_task(&self) -> Result<()> {
+        let in_stream = self.ipc_manager.get_danmaku_socket_path();
+        let max_len = match self.cm.title.borrow().char_indices().nth(70) {
+            Some(it) => it.0,
+            None => self.cm.title.borrow().len(),
+        };
+        let now = chrono::Local::now();
+        let filename = format!(
+            "{} - {}.ass",
+            self.cm.title.borrow()[..max_len].replace('/', "-"),
+            now.format("%F %T")
+        );
+        let mut cmd = Command::new("ffmpeg");
+        cmd.args(["-y", "-hide_banner", "-nostdin"]);
+        cmd.arg("-i");
+        cmd.arg(&in_stream);
+        cmd.args(["-c", "copy"]);
+        cmd.arg(&filename);
+        let mut ff = cmd
+            .stdin(std::process::Stdio::null())
+            // .stderr(std::process::Stdio::null())
+            .kill_on_drop(false)
+            .spawn()
+            .unwrap();
+        let _ = ff.wait().await;
+        Ok(())
     }
 
     pub async fn write_record_task(&self) -> Result<()> {
@@ -71,7 +99,7 @@ impl FfmpegControl {
         Ok(ret)
     }
 
-    pub fn create_ff_command(&self, rurl: &Vec<String>) -> Result<Command> {
+    pub fn create_ff_command(&self, stream_info: &HashMap<&str, String>) -> Result<Command> {
         let mut ret = Command::new("ffmpeg");
         ret.args(["-y", "-xerror"]);
         ret.arg("-hide_banner");
@@ -90,14 +118,14 @@ impl FfmpegControl {
                         "-headers",
                         "Referer: https://www.bilibili.com/",
                     ]);
-                    ret.arg("-i").arg(&rurl[1]);
+                    ret.arg("-i").arg(&stream_info["url_v"]);
                     ret.args(&[
                         "-user_agent",
                         &crate::utils::gen_ua(),
                         "-headers",
                         "Referer: https://www.bilibili.com/",
                     ]);
-                    ret.arg("-i").arg(&rurl[2]);
+                    ret.arg("-i").arg(&stream_info["url_a"]);
                 } else {
                     ret.arg("-i").arg(self.ipc_manager.get_video_socket_path());
                     ret.arg("-i").arg(self.ipc_manager.get_audio_socket_path());
@@ -190,9 +218,9 @@ impl FfmpegControl {
         Ok(())
     }
 
-    pub async fn run(&self, rurl: &Vec<String>) -> Result<()> {
+    pub async fn run(&self, stream_info: &HashMap<&str, String>) -> Result<()> {
         let mut ff = self
-            .create_ff_command(rurl)?
+            .create_ff_command(stream_info)?
             .stdin(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)

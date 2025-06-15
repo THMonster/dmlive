@@ -8,7 +8,7 @@ use crate::{
     dmlive::DMLMessage,
     ipcmanager::IPCManager,
 };
-use std::rc::Rc;
+use std::{collections::HashMap, rc::Rc};
 
 pub struct Streamer {
     ipc_manager: Rc<IPCManager>,
@@ -25,11 +25,11 @@ impl Streamer {
         }
     }
 
-    pub async fn run(&self, rurl: &Vec<String>) -> anyhow::Result<()> {
+    pub async fn run(&self, stream_info: &HashMap<&str, String>) -> anyhow::Result<()> {
         match self.cm.stream_type.get() {
             StreamType::FLV => {
                 let s = flv::FLV::new(
-                    rurl[0].to_string(),
+                    &stream_info,
                     self.cm.clone(),
                     self.ipc_manager.clone(),
                     self.mtx.clone(),
@@ -38,7 +38,7 @@ impl Streamer {
             }
             StreamType::HLS(_) => {
                 let s = hls::HLS::new(
-                    rurl[0].to_string(),
+                    &stream_info,
                     self.cm.clone(),
                     self.ipc_manager.clone(),
                     self.mtx.clone(),
@@ -47,9 +47,7 @@ impl Streamer {
             }
             StreamType::DASH => {
                 let s = youtube::Youtube::new(
-                    rurl[0].to_string(),
-                    rurl[1].to_string(),
-                    rurl[2].parse().unwrap_or(0),
+                    &stream_info,
                     self.cm.clone(),
                     self.ipc_manager.clone(),
                     self.mtx.clone(),

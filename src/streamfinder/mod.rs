@@ -1,3 +1,4 @@
+pub mod baha;
 pub mod bilibili;
 pub mod douyu;
 pub mod huya;
@@ -6,10 +7,11 @@ pub mod youtube;
 
 use crate::ipcmanager::IPCManager;
 use crate::{config::ConfigManager, dmlive::DMLMessage};
-use anyhow::anyhow;
 use anyhow::Result;
+use anyhow::anyhow;
 use log::info;
 use log::warn;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 #[allow(unused)]
@@ -34,77 +36,46 @@ impl StreamFinder {
     //     Ok((u.remove(0), u))
     // }
 
-    pub async fn run(&self) -> Result<(String, Vec<String>)> {
+    pub async fn run(&self) -> Result<HashMap<&str, String>> {
         loop {
             for _ in 0..20 {
-                match self.cm.site {
+                let stream_info = match self.cm.site {
                     crate::config::Site::BiliLive => {
                         let b = bilibili::Bilibili::new(self.cm.clone());
-                        match b.get_live(&self.cm.room_url).await {
-                            Ok(u) => {
-                                return Ok((u["title"].to_string(), vec![u["url"].to_string()]));
-                            }
-                            Err(e) => {
-                                info!("{}", e);
-                            }
-                        };
+                        b.get_live(&self.cm.room_url).await
                     }
                     crate::config::Site::BiliVideo => {
                         let b = bilibili::Bilibili::new(self.cm.clone());
                         let p = self.cm.bvideo_info.borrow().current_page;
-                        match b.get_video(p).await {
-                            Ok(mut u) => {
-                                return Ok((u.remove(0), u));
-                            }
-                            Err(e) => {
-                                info!("{}", e);
-                            }
-                        };
+                        b.get_video(p).await
                     }
                     crate::config::Site::DouyuLive => {
                         let b = douyu::Douyu::new();
-                        match b.get_live(&self.cm.room_url).await {
-                            Ok(u) => {
-                                return Ok((u["title"].to_string(), vec![u["url"].to_string()]));
-                            }
-                            Err(e) => {
-                                info!("{}", e);
-                            }
-                        };
+                        b.get_live(&self.cm.room_url).await
                     }
                     crate::config::Site::HuyaLive => {
                         let b = huya::Huya::new();
-                        match b.get_live(&self.cm.room_url).await {
-                            Ok(u) => {
-                                return Ok((u["title"].to_string(), vec![u["url"].to_string()]));
-                            }
-                            Err(e) => {
-                                info!("{}", e);
-                            }
-                        };
+                        b.get_live(&self.cm.room_url).await
                     }
                     crate::config::Site::TwitchLive => {
                         let b = twitch::Twitch::new();
-                        match b.get_live(&self.cm.room_url).await {
-                            Ok(u) => {
-                                return Ok((u["title"].to_string(), vec![u["url"].to_string()]));
-                            }
-                            Err(e) => {
-                                info!("{}", e);
-                            }
-                        };
+                        b.get_live(&self.cm.room_url).await
                     }
                     crate::config::Site::YoutubeLive => {
                         let b = youtube::Youtube::new();
-                        match b.get_live(&self.cm.room_url).await {
-                            Ok(u) => {
-                                let a: Vec<String> = u["url"].split('\n').map(|x| x.to_string()).collect();
-                                return Ok((u["title"].to_string(), a));
-                            }
-                            Err(e) => {
-                                info!("{}", e);
-                            }
-                        };
+                        b.get_live(&self.cm.room_url).await
+                    }
+                    crate::config::Site::BahaVideo => {
+                        let b = baha::Baha::new(self.cm.clone());
+                        b.get_video().await
+                    }
+                };
+                match stream_info {
+                    Ok(it) => {
+                        return Ok(it);
+                    }
+                    Err(e) => {
+                        info!("{}", e);
                     }
                 }
                 warn!("real url not found, retry...");

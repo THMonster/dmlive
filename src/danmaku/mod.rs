@@ -1,3 +1,4 @@
+mod baha;
 mod bilibili;
 mod bilivideo;
 mod douyu;
@@ -40,13 +41,23 @@ Style: Default,Sans,40,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,1
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 "#;
-const EMOJI_RE: &'static str = r#"[\x{1F300}-\x{1F5FF}|\x{1F1E6}-\x{1F1FF}|\x{2700}-\x{27BF}|\x{1F900}-\x{1F9FF}|\x{1F600}-\x{1F64F}|\x{1F680}-\x{1F6FF}|\x{2600}-\x{26FF}]"#;
+// const EMOJI_RE: &'static str = r#"[\x{1F300}-\x{1F5FF}|\x{1F1E6}-\x{1F1FF}|\x{2700}-\x{27BF}|\x{1F900}-\x{1F9FF}|\x{1F600}-\x{1F64F}|\x{1F680}-\x{1F6FF}|\x{2600}-\x{26FF}]"#;
 
 #[derive(Clone, Debug)]
 struct DanmakuChannel {
     length: usize,
     begin_pts: u64,
 }
+
+#[derive(Clone, Debug)]
+pub struct DMLDanmaku {
+    time: i64,
+    text: String,
+    nick: String,
+    color: String,
+    position: u8,
+}
+
 pub struct Danmaku {
     ipc_manager: Rc<IPCManager>,
     cm: Rc<ConfigManager>,
@@ -114,7 +125,7 @@ impl Danmaku {
             let _ = self.cm.write_config().await;
         }
     }
-    
+
     pub fn set_ratio_scale(&self, ratio_scale: f64) {
         self.ratio_scale.set(ratio_scale);
     }
@@ -181,46 +192,61 @@ impl Danmaku {
             .round() as usize
     }
 
-    async fn launch_single_danmaku(
-        &self, c: &str, n: &str, d: &str, c_pts: u64, socket: &mut Box<dyn DMLStream>,
-    ) -> Result<()> {
+    async fn launch_single_danmaku(&self, d: &DMLDanmaku, socket: &mut Box<dyn DMLStream>) -> Result<()> {
         let mut out_of_channel = false;
         let mut f1 = || {
-            n.trim().is_empty().not().then(|| {})?;
-            let display_length = self.get_danmaku_display_length(n, d);
-            self.get_avail_danmaku_channel(c_pts, display_length)
+            d.color.trim().is_empty().not().then(|| {})?;
+            let display_length = self.get_danmaku_display_length(&d.nick, &d.text);
+            self.get_avail_danmaku_channel(d.time as u64, display_length)
                 .or_else(|| {
                     out_of_channel = true;
                     None
                 })
                 .map(|it| (it, display_length))
         };
-        let cluster = match f1() {
-            Some((avail_dc, display_length)) => {
-                let ass = format!(
-                    r"{4},0,Default,{5},0,0,0,,{{\alpha{0}\fs{7}\1c&{6}&\move(1920,{1},{2},{1})}}{8}{9}{3}",
-                    format_args!("{:02x}", (self.cm.font_alpha.get() * 255_f64) as u8),
-                    avail_dc * self.font_size.get(),
-                    0 - display_length as isize,
-                    &d,
-                    self.read_order.get(),
-                    &n,
-                    format_args!("{}{}{}", &c[4..6], &c[2..4], &c[0..2]),
-                    self.font_size.get(),
-                    if self.show_nick.get() { n } else { "" },
-                    if self.show_nick.get() { ": " } else { "" },
-                )
-                .into_bytes();
-                mkv_header::DMKVCluster::new(ass, c_pts, self.cm.danmaku_speed.get())
+        let cluster = if d.position == 0 {
+            match f1() {
+                Some((avail_dc, display_length)) => {
+                    let ass = format!(
+                        r"{4},0,Default,{5},0,0,0,,{{\alpha{0}\fs{7}\1c&{6}&\move(1920,{1},{2},{1})}}{8}{9}{3}",
+                        format_args!("{:02x}", (self.cm.font_alpha.get() * 255_f64) as u8),
+                        avail_dc * self.font_size.get(),
+                        0 - display_length as isize,
+                        &d.text,
+                        self.read_order.get(),
+                        &d.nick,
+                        format_args!("{}{}{}", &d.color[4..6], &d.color[2..4], &d.color[0..2]),
+                        self.font_size.get(),
+                        if self.show_nick.get() { &d.nick } else { "" },
+                        if self.show_nick.get() { ": " } else { "" },
+                    )
+                    .into_bytes();
+                    mkv_header::DMKVCluster::new(ass, d.time as u64, self.cm.danmaku_speed.get())
+                }
+                None => {
+                    let ass = format!(
+                        r"{},0,Default,dmlive-empty,20,20,2,,",
+                        self.read_order.get()
+                    )
+                    .into_bytes();
+                    mkv_header::DMKVCluster::new(ass, d.time as u64, 1)
+                }
             }
-            None => {
-                let ass = format!(
-                    r"{},0,Default,dmlive-empty,20,20,2,,",
-                    self.read_order.get()
-                )
-                .into_bytes();
-                mkv_header::DMKVCluster::new(ass, c_pts, 1)
-            }
+        } else {
+            let ass = format!(
+                r"{0},0,Default,{1},0,0,0,,{{\alpha{2}\fs{3}\1c&{4}&\an{5}}}{6}{7}{8}",
+                self.read_order.get(),
+                &d.nick,
+                format_args!("{:02x}", (self.cm.font_alpha.get() * 255_f64) as u8),
+                self.font_size.get(),
+                format_args!("{}{}{}", &d.color[4..6], &d.color[2..4], &d.color[0..2]),
+                d.position,
+                if self.show_nick.get() { &d.nick } else { "" },
+                if self.show_nick.get() { ": " } else { "" },
+                &d.text,
+            )
+            .into_bytes();
+            mkv_header::DMKVCluster::new(ass, d.time as u64, self.cm.danmaku_speed.get())
         };
         self.read_order.set(self.read_order.get() + 1);
         cluster.write_to_socket(socket).await.map_err(|_| anyhow!("socket error"))?;
@@ -228,7 +254,118 @@ impl Danmaku {
         Ok(())
     }
 
-    pub async fn danmaku_client_task(&self, dtx: async_channel::Sender<(String, String, String)>) -> Result<()> {
+    async fn launch_live_danmaku_task(&self, rx: async_channel::Receiver<DMLDanmaku>) -> Result<()> {
+        let now = std::time::Instant::now();
+        let mut socket = self.ipc_manager.get_danmaku_socket().await?;
+        let mut dm_queue = VecDeque::new();
+        // let emoji_re = regex::Regex::new(EMOJI_RE).unwrap();
+        let mut empty_dm = DMLDanmaku {
+            text: "".to_string(),
+            nick: "".to_string(),
+            color: "".to_string(),
+            time: 0,
+            position: 0,
+        };
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(200));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        socket.write_all(&mkv_header::get_mkv_header()).await?;
+        let mut printed = false;
+        'l1: loop {
+            while let Ok(it) = rx.try_recv() {
+                dm_queue.push_back(it);
+            }
+            let mut launch = true;
+            while launch {
+                let dml_dm = dm_queue.get_mut(0).ok_or_else(|| launch = false).unwrap_or(&mut empty_dm);
+                if !dml_dm.text.is_empty() && !printed {
+                    if !self.cm.quiet {
+                        println!("[{}] {}", &dml_dm.nick, &dml_dm.text);
+                        printed = true;
+                    }
+                    if !self.fk.dm_check(&dml_dm.text) {
+                        let _ = dm_queue.pop_front();
+                        continue;
+                    }
+                }
+                // let da = emoji_re.replace_all(da, "[em]");
+                dml_dm.time = now.elapsed().as_millis() as i64;
+                match self.launch_single_danmaku(&dml_dm, &mut socket).await {
+                    Ok(_) => {
+                        let _ = dm_queue.pop_front();
+                        printed = false;
+                    }
+                    Err(e) => {
+                        info!("danmaku send error: {}", &e);
+                        if e.to_string().contains("socket error") {
+                            break 'l1;
+                        } else {
+                            launch = false;
+                        }
+                    }
+                };
+            }
+            if self.read_order.get() > 70 {
+                interval.tick().await;
+            }
+        }
+        Ok(())
+    }
+
+    async fn launch_video_danmaku_task(&self, rx: async_channel::Receiver<DMLDanmaku>) -> Result<()> {
+        let mut socket = self.ipc_manager.get_danmaku_socket().await?;
+        let mut dm_map: BTreeMap<i64, DMLDanmaku> = BTreeMap::new();
+        while let Ok(d) = rx.recv().await {
+            dm_map.insert(d.time, d);
+        }
+        socket.write_all(ASS_HEADER_TEXT.as_bytes()).await?;
+        for (k, v) in dm_map.into_iter() {
+            info!("{}-{}-{}-{}", k, &v.text, v.position, &v.color);
+            let t1 = NaiveTime::from_hms_opt(0, 0, 0).unwrap() + Duration::milliseconds(k);
+            let t2 = t1 + Duration::milliseconds(self.cm.danmaku_speed.get() as i64);
+            let mut t1_s = t1.format("%k:%M:%S%.3f").to_string();
+            let mut t2_s = t2.format("%k:%M:%S%.3f").to_string();
+            t1_s.remove(t1_s.len() - 1);
+            t2_s.remove(t2_s.len() - 1);
+            if v.position == 0 {
+                let display_length = self.get_danmaku_display_length(&v.nick, &v.text);
+                let avail_dc = match self.get_avail_danmaku_channel(k as u64, display_length) {
+                    Some(it) => it,
+                    None => {
+                        continue;
+                    }
+                };
+                let ass = format!(
+                    r#"Dialogue: 0,{4},{5},Default,,0,0,0,,{{\alpha{0}\fs{7}\1c&{6}&\move(1920,{1},{2},{1})}}{3}"#,
+                    format_args!("{:02x}", (self.cm.font_alpha.get() * 255_f64) as u8),
+                    avail_dc * self.font_size.get(),
+                    0 - display_length as isize,
+                    v.text,
+                    t1_s,
+                    t2_s,
+                    format_args!("{}{}{}", &v.color[4..6], &v.color[2..4], &v.color[0..2]),
+                    self.font_size.get(),
+                );
+                socket.write_all(ass.as_bytes()).await?;
+                socket.write_all("\n".as_bytes()).await?;
+            } else {
+                let ass = format!(
+                    r#"Dialogue: 0,{4},{5},Default,,0,0,0,,{{\alpha{0}\fs{3}\1c&{2}&\an{6}}}{1}"#,
+                    format_args!("{:02x}", (self.cm.font_alpha.get() * 255_f64) as u8),
+                    v.text,
+                    format_args!("{}{}{}", &v.color[4..6], &v.color[2..4], &v.color[0..2]),
+                    self.font_size.get(),
+                    t1_s,
+                    t2_s,
+                    v.position
+                );
+                socket.write_all(ass.as_bytes()).await?;
+                socket.write_all("\n".as_bytes()).await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn danmaku_client_task(&self, dtx: async_channel::Sender<DMLDanmaku>) -> Result<()> {
         loop {
             match match self.cm.site {
                 crate::config::Site::BiliLive => {
@@ -246,6 +383,10 @@ impl Danmaku {
                         dtx.clone(),
                     )
                     .await
+                }
+                crate::config::Site::BahaVideo => {
+                    let b = baha::Baha::new();
+                    b.run(self.bili_video_cid.borrow().to_string(), dtx.clone()).await
                 }
                 crate::config::Site::DouyuLive => {
                     let b = douyu::Douyu::new();
@@ -278,123 +419,16 @@ impl Danmaku {
         Ok(())
     }
 
-    async fn launch_danmaku_task(&self, rx: async_channel::Receiver<(String, String, String)>) -> Result<()> {
-        let now = std::time::Instant::now();
-        let mut socket = self.ipc_manager.get_danmaku_socket().await?;
-        let mut dm_queue = VecDeque::new();
-        // let emoji_re = regex::Regex::new(EMOJI_RE).unwrap();
-        let empty_dm = ("".to_string(), "".to_string(), "".to_string());
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(200));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        socket.write_all(&mkv_header::get_mkv_header()).await?;
-        let mut printed = false;
-        'l1: loop {
-            while let Ok(it) = rx.try_recv() {
-                dm_queue.push_back(it);
-            }
-            let mut launch = true;
-            while launch {
-                let (co, ni, da) = dm_queue.get(0).ok_or_else(|| launch = false).unwrap_or(&empty_dm);
-                if !da.is_empty() && !printed {
-                    if !self.cm.quiet {
-                        println!("[{}] {}", &ni, &da);
-                        printed = true;
-                    }
-                    if !self.fk.dm_check(da) {
-                        let _ = dm_queue.pop_front();
-                        continue;
-                    }
-                }
-                // let da = emoji_re.replace_all(da, "[em]");
-                let c_pts = now.elapsed().as_millis() as u64;
-                match self.launch_single_danmaku(co, ni, &da, c_pts, &mut socket).await {
-                    Ok(_) => {
-                        let _ = dm_queue.pop_front();
-                        printed = false;
-                    }
-                    Err(e) => {
-                        info!("danmaku send error: {}", &e);
-                        if e.to_string().contains("socket error") {
-                            break 'l1;
-                        } else {
-                            launch = false;
-                        }
-                    }
-                };
-            }
-            if self.read_order.get() > 70 {
-                interval.tick().await;
-            }
-        }
-        Ok(())
-    }
-
-    async fn launch_bvideo_danmaku_task(&self, rx: async_channel::Receiver<(String, String, String)>) -> Result<()> {
-        let mut socket = self.ipc_manager.get_danmaku_socket().await?;
-        let mut dm_map: BTreeMap<i64, (String, String, String)> = BTreeMap::new();
-        while let Ok((c, n, d)) = rx.recv().await {
-            let tmps: Vec<&str> = n.split(',').collect();
-            dm_map.insert(
-                (tmps[0].parse::<f64>().unwrap() * 1000.0) as i64,
-                (c.to_string(), tmps[1].to_string(), d.to_string()),
-            );
-        }
-        socket.write_all(ASS_HEADER_TEXT.as_bytes()).await?;
-        for (k, (c, t, d)) in dm_map.into_iter() {
-            info!("{}-{}-{}-{}", &k, &c, &t, &d);
-            let t1 = NaiveTime::from_hms_opt(0, 0, 0).unwrap() + Duration::milliseconds(k);
-            let t2 = t1 + Duration::milliseconds(self.cm.danmaku_speed.get() as i64);
-            let mut t1_s = t1.format("%k:%M:%S%.3f").to_string();
-            let mut t2_s = t2.format("%k:%M:%S%.3f").to_string();
-            t1_s.remove(t1_s.len() - 1);
-            t2_s.remove(t2_s.len() - 1);
-            if t.trim().eq("4") {
-                let ass = format!(
-                    r#"Dialogue: 0,{4},{5},Default,,0,0,0,,{{\alpha{0}\fs{3}\1c&{2}&\an2}}{1}"#,
-                    format_args!("{:02x}", (self.cm.font_alpha.get() * 255_f64) as u8),
-                    &d,
-                    format_args!("{}{}{}", &c[4..6], &c[2..4], &c[0..2]),
-                    self.font_size.get(),
-                    t1_s,
-                    t2_s,
-                );
-                socket.write_all(ass.as_bytes()).await?;
-                socket.write_all("\n".as_bytes()).await?;
-            } else if t.trim().eq("5") {
-                let ass = format!(
-                    r#"Dialogue: 0,{4},{5},Default,,0,0,0,,{{\alpha{0}\fs{3}\1c&{2}&\an8}}{1}"#,
-                    format_args!("{:02x}", (self.cm.font_alpha.get() * 255_f64) as u8),
-                    &d,
-                    format!("{}{}{}", &c[4..6], &c[2..4], &c[0..2]),
-                    self.font_size.get(),
-                    t1_s,
-                    t2_s,
-                );
-                socket.write_all(ass.as_bytes()).await?;
-                socket.write_all("\n".as_bytes()).await?;
-            } else {
-                let display_length = self.get_danmaku_display_length("", &d);
-                let avail_dc = match self.get_avail_danmaku_channel(k as u64, display_length) {
-                    Some(it) => it,
-                    None => {
-                        continue;
-                    }
-                };
-                let ass = format!(
-                    r#"Dialogue: 0,{4},{5},Default,,0,0,0,,{{\alpha{0}\fs{7}\1c&{6}&\move(1920,{1},{2},{1})}}{3}"#,
-                    format_args!("{:02x}", (self.cm.font_alpha.get() * 255_f64) as u8),
-                    avail_dc * self.font_size.get(),
-                    0 - display_length as isize,
-                    &d,
-                    t1_s,
-                    t2_s,
-                    format!("{}{}{}", &c[4..6], &c[2..4], &c[0..2]),
-                    self.font_size.get(),
-                );
-                socket.write_all(ass.as_bytes()).await?;
-                socket.write_all("\n".as_bytes()).await?;
-            }
-        }
+    pub async fn run_baha(&self) -> Result<()> {
+        self.reset();
+        let (dtx, drx) = async_channel::unbounded();
+        let (dc_res, fbd_res) = tokio::join!(
+            self.danmaku_client_task(dtx),
+            self.launch_video_danmaku_task(drx)
+        );
+        dc_res?;
+        fbd_res?;
+        info!("baha danmaku exited");
         Ok(())
     }
 
@@ -405,7 +439,7 @@ impl Danmaku {
         let (dtx, drx) = async_channel::unbounded();
         let (dc_res, fbd_res) = tokio::join!(
             self.danmaku_client_task(dtx),
-            self.launch_bvideo_danmaku_task(drx)
+            self.launch_video_danmaku_task(drx)
         );
         dc_res?;
         fbd_res?;
@@ -413,13 +447,12 @@ impl Danmaku {
         Ok(())
     }
 
-    // pub async fn run(&self, ratio_scale: f64, _start_pts: u64) -> Result<()> {
     pub async fn run(&self) -> Result<()> {
         self.reset();
         let (dtx, drx) = async_channel::unbounded();
         tokio::select! {
             it = self.danmaku_client_task(dtx) => { it?; },
-            it = self.launch_danmaku_task(drx) => { it?; },
+            it = self.launch_live_danmaku_task(drx) => { it?; },
         }
         info!("danmaku exited");
         Ok(())

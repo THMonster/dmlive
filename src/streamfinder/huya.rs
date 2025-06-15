@@ -12,7 +12,7 @@ impl Huya {
         Self {}
     }
 
-    pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<String, String>> {
+    pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<&'static str, String>> {
         let client = reqwest::Client::new();
         let mut ret = HashMap::new();
         let resp = client
@@ -31,7 +31,7 @@ impl Huya {
         let j2: serde_json::Value = serde_json::from_str(&re2.captures(&resp).ok_or_else(|| dmlerr!())?[1])?;
         // println!("{:?}", &j);
         ret.insert(
-            String::from("title"),
+            "title",
             format!(
                 "{} - {}",
                 j2.pointer("/introduction").ok_or_else(|| dmlerr!())?.as_str().unwrap(),
@@ -44,7 +44,7 @@ impl Huya {
             j.pointer("/data/0/gameStreamInfoList/0/sStreamName").ok_or_else(|| dmlerr!())?.as_str().unwrap();
         let p = Self::gen_params(flv_anti_code, stream_name);
         ret.insert(
-            String::from("url"),
+            "url",
             html_escape::decode_html_entities(
                 format!(
                     "{}/{}.{}?{}",

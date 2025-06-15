@@ -1,65 +1,65 @@
-quick_error!{
+quick_error! {
     #[derive(Debug, PartialEq, Eq)]
     pub enum DecodeErr{
         NoEnoughDataErr{
-            description("decoder: without enough data to read")
+            display("decoder: without enough data to read")
         }
         UnknownTarsTypeErr{
-            description("decoder: unknown tars type")
+            display("decoder: unknown tars type")
         }
         TarsTagNotFoundErr{
-            description("decoder: Tag Not Found")
+            display("decoder: Tag Not Found")
         }
         MisMatchTarsTypeErr {
-            description("decoder: mismatch type")
+            display("decoder: mismatch type")
         }
         WrongSimpleListTarsTypeErr {
-            description("decoder: wrong simple list type")
+            display("decoder: wrong simple list type")
         }
         InvalidEnumValue {
-            description("decoder: invalid enum value")
+            display("decoder: invalid enum value")
         }
         FieldNotFoundErr(desc: String) {
-            description(desc)
+            display("{}", desc)
         }
         TypeNotFoundErr(desc: String) {
-            description(desc)
+            display("{}", desc)
         }
         TupKeyNotFoundErr {
-            description("decoder: Tup Key Not Found")
+            display("decoder: Tup Key Not Found")
         }
         UnsupportTupVersionErr {
-            description("decoder: Unsupport protocol version")
+            display("decoder: Unsupport protocol version")
         }
     }
 }
 
-quick_error!{
+quick_error! {
     #[derive(Debug, PartialEq, Eq)]
     pub enum TarsTypeErr{
         DisMatchTarsTypeErr{
-            description("tars_type: disMatch tars_type")
+            display("tars_type: disMatch tars_type")
         }
     }
 }
 
-quick_error!{
+quick_error! {
     #[derive(Debug, PartialEq, Eq)]
     pub enum EncodeErr{
         TooBigTagErr{
-            description("encoder: tag too big, max value is 255")
+            display("encoder: tag too big, max value is 255")
         }
         ConvertU8Err{
-            description("encoder: cannot convert to u8")
+            display("encoder: cannot convert to u8")
         }
         DataTooBigErr {
-            description("encoder: data bigger than 4294967295 bytes")
+            display("encoder: data bigger than 4294967295 bytes")
         }
         UnknownTarsTypeErr{
-            description("encoder: unknown tars type")
+            display("encoder: unknown tars type")
         }
         UnsupportTupVersionErr {
-            description("encoder:  Unsupport protocol version")
+            display("encoder:  Unsupport protocol version")
         }
     }
 }

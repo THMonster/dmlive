@@ -2,6 +2,8 @@ use bytes::BufMut;
 use log::info;
 use tokio::io::AsyncWriteExt;
 
+use super::DMLDanmaku;
+
 pub struct Bilibili {}
 
 impl Bilibili {
@@ -9,9 +11,7 @@ impl Bilibili {
         Bilibili {}
     }
 
-    pub async fn run(
-        &self, url: &str, dtx: async_channel::Sender<(String, String, String)>,
-    ) -> anyhow::Result<()> {
+    pub async fn run(&self, url: &str, dtx: async_channel::Sender<DMLDanmaku>) -> anyhow::Result<()> {
         let client = reqwest::Client::builder()
             .deflate(false)
             .user_agent(crate::utils::gen_ua())
@@ -33,12 +33,30 @@ impl Bilibili {
         for e in elem_dm {
             if e.has_attribute("p") {
                 let tmps: Vec<&str> = e.attribute("p").unwrap().split(',').collect();
-                dtx.send((
-                    format!("{:06x}", tmps[3].parse::<u64>().unwrap_or(16777215)),
-                    format!("{},{}", tmps[0], tmps[1]),
-                    e.text().unwrap_or("").into(),
-                ))
-                .await?;
+                let text = e.text().unwrap_or("");
+                let time = (tmps[0].parse::<f64>().unwrap() * 1000.0) as i64;
+                let position = if tmps[1].eq("4") {
+                    2
+                } else if tmps[1].eq("5") {
+                    8
+                } else {
+                    0
+                };
+                let color = format!("{:06x}", tmps[3].parse::<u64>().unwrap_or(16777215));
+                let dml_dm = DMLDanmaku {
+                    time,
+                    text: text.to_string(),
+                    nick: "".to_string(),
+                    color: color.to_string(),
+                    position,
+                };
+                dtx.send(dml_dm).await?;
+                // dtx.send((
+                //     format!("{:06x}", tmps[3].parse::<u64>().unwrap_or(16777215)),
+                //     format!("{},{}", tmps[0], tmps[1]),
+                //     e.text().unwrap_or("").into(),
+                // ))
+                // .await?;
             }
         }
         dtx.close();

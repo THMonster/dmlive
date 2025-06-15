@@ -4,7 +4,7 @@ use crate::{
     ipcmanager::IPCManager,
 };
 use log::{info, warn};
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, collections::HashMap, rc::Rc};
 use tokio::io::AsyncWriteExt;
 
 #[allow(unused)]
@@ -16,9 +16,12 @@ pub struct FLV {
 }
 
 impl FLV {
-    pub fn new(url: String, cm: Rc<ConfigManager>, im: Rc<IPCManager>, mtx: async_channel::Sender<DMLMessage>) -> Self {
+    pub fn new(
+        stream_info: &HashMap<&str, String>, cm: Rc<ConfigManager>, im: Rc<IPCManager>,
+        mtx: async_channel::Sender<DMLMessage>,
+    ) -> Self {
         FLV {
-            url,
+            url: stream_info["url"].to_string(),
             ipc_manager: im,
             cm,
             mtx,

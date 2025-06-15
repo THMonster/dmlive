@@ -4,12 +4,13 @@ use crate::{
     dmlive::DMLMessage,
     ipcmanager::{DMLStream, IPCManager},
     streamer::segment::{MediaSegment, SegmentStream},
+    streamfinder,
 };
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 use log::info;
 use reqwest::{Client, Response};
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
     rc::Rc,
 };
@@ -24,8 +25,9 @@ fn get_head_sq_and_time(resp: &Response) -> anyhow::Result<(u64, u64)> {
 
 #[allow(unused)]
 pub struct Youtube {
-    url_v: String,
-    url_a: String,
+    room_url: String,
+    url_v: RefCell<String>,
+    url_a: RefCell<String>,
     sq: Cell<u64>,
     itvl: Cell<u64>,
     ipc_manager: Rc<IPCManager>,
@@ -36,22 +38,23 @@ pub struct Youtube {
 
 impl Youtube {
     pub fn new(
-        url_v: String, url_a: String, sq: u64, cm: Rc<ConfigManager>, im: Rc<IPCManager>,
+        stream_info: &HashMap<&str, String>, cm: Rc<ConfigManager>, im: Rc<IPCManager>,
         mtx: async_channel::Sender<DMLMessage>,
     ) -> Self {
         Youtube {
-            url_v,
-            url_a,
-            sq: Cell::new(sq),
+            url_v: RefCell::new(stream_info["url_v"].to_string()),
+            url_a: RefCell::new(stream_info["url_a"].to_string()),
+            sq: Cell::new(stream_info["sq"].parse().unwrap_or(1)),
             itvl: Cell::new(1000),
             ipc_manager: im,
             cm,
             mtx,
             stream_ready: Cell::new(false),
+            room_url: stream_info["room_url"].to_string(),
         }
     }
 
-    pub async fn strip_mp4_header(&self, resp: &mut Response) -> anyhow::Result<BytesMut> {
+    pub async fn strip_mp4_header(&self, resp: &mut Response) -> anyhow::Result<Bytes> {
         let mut buf = BytesMut::with_capacity(4000);
         while let Some(chunk) = resp.chunk().await? {
             buf.extend_from_slice(chunk.chunk());
@@ -64,13 +67,13 @@ impl Youtube {
         }
         // if matroska, return
         if &buf[0..4] == b"\x1a\x45\xdf\xa3" {
-            return Ok(buf);
+            return Ok(buf.freeze());
         }
         while buf.len() > 8 {
             let len = buf.get_u32();
             if &buf[0..4] == b"emsg" {
                 buf.advance(len as usize - 4);
-                return Ok(buf);
+                return Ok(buf.freeze());
             }
             buf.advance(len as usize - 4);
         }
@@ -83,7 +86,7 @@ impl Youtube {
         if seg.skip != 0 {
             return Ok(());
         }
-        let u = format!("{}sq/{}", &self.url_a, &seg.url);
+        let u = format!("{}sq/{}", self.url_a.borrow(), &seg.url);
         info!("a: {}", &u);
         let mut resp = client
             .get(u)
@@ -107,7 +110,7 @@ impl Youtube {
         if seg.skip == 2 {
             return Ok(());
         }
-        let u = format!("{}sq/{}", &self.url_v, &seg.url);
+        let u = format!("{}sq/{}", self.url_v.borrow(), &seg.url);
         info!("v: {}", &u);
         let mut resp = client
             .get(u)
@@ -137,6 +140,19 @@ impl Youtube {
             }
         }
         Ok(())
+    }
+
+    pub async fn refresh_manifest_task(&self, client: &Client) -> anyhow::Result<()> {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(20000));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        let sf = streamfinder::youtube::Youtube::new();
+        loop {
+            interval.tick().await;
+            let mut info = sf.get_live_info(client, self.room_url.as_str()).await?;
+            *self.url_v.borrow_mut() = info.remove("url_v").unwrap();
+            *self.url_a.borrow_mut() = info.remove("url_a").unwrap();
+        }
     }
 
     pub async fn refresh_seq_task(&self, ss: &SegmentStream) -> anyhow::Result<()> {
@@ -208,6 +224,7 @@ impl Youtube {
         let (tx_v, rx_v) = mpsc::channel(100);
         let (tx_a, rx_a) = mpsc::channel(100);
         tokio::select! {
+            it = self.refresh_manifest_task(&client) => { it?; },
             it = self.refresh_seq_task(&seg_stream) => { it?; },
             it = self.dispatch_task(&seg_stream, tx_v, tx_a) => { it?; },
             it = self.video_task(&client, rx_v) => { it?; },

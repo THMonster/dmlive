@@ -153,12 +153,18 @@ impl DMLive {
                         self.play_live().await?;
                     }
                 }
-                crate::config::RunMode::Record => {
-                    self.play_live().await?;
-                    if matches!(self.cm.site, crate::config::Site::BiliVideo) {
+                crate::config::RunMode::Record => match self.cm.record_mode {
+                    crate::config::RecordMode::All => {
+                        self.play_live().await?;
+                        if matches!(self.cm.site, crate::config::Site::BiliVideo) {
+                            return Err(anyhow::anyhow!("recording finished"));
+                        }
+                    }
+                    crate::config::RecordMode::Danmaku => {
+                        self.download_danmaku().await?;
                         return Err(anyhow::anyhow!("recording finished"));
                     }
-                }
+                },
             }
             tokio::time::sleep(Duration::from_millis(1000)).await;
         }
@@ -166,17 +172,16 @@ impl DMLive {
     }
 
     pub async fn play_live(&self) -> anyhow::Result<()> {
-        let (title, urls) = self.sf.run().await?;
-        self.cm.set_stream_type(&urls[0]);
-        self.cm.title.borrow_mut().clear();
-        self.cm.title.borrow_mut().push_str(&title);
-        self.dm.set_bili_video_cid(&urls[0]).await;
+        let mut stream_info = self.sf.run().await?;
+        self.cm.set_stream_type(&stream_info);
+        *self.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
+        self.dm.set_bili_video_cid(stream_info.get("bili_cid").unwrap_or(&"".to_string())).await;
         let ff_task = async {
-            self.fc.run(&urls).await?;
+            self.fc.run(&stream_info).await?;
             anyhow::Ok(())
         };
         let streamer_task = async {
-            let _ = self.st.run(&urls).await.map_err(|e| info!("streamer error: {}", e));
+            let _ = self.st.run(&stream_info).await.map_err(|e| info!("streamer error: {}", e));
             self.fc.quit().await?;
             anyhow::Ok(())
         };
@@ -189,12 +194,35 @@ impl DMLive {
     }
 
     pub async fn play_video(&self) -> anyhow::Result<()> {
-        let (title, urls) = self.sf.run().await?;
-        self.cm.set_stream_type(&urls[0]);
-        self.cm.title.borrow_mut().clear();
-        self.cm.title.borrow_mut().push_str(&title);
-        self.dm.set_bili_video_cid(&urls[0]).await;
-        self.mc.reload_edl_video(&urls).await?;
+        let mut stream_info = self.sf.run().await?;
+        self.cm.set_stream_type(&stream_info);
+        *self.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
+        self.dm.set_bili_video_cid(stream_info.get("bili_cid").unwrap_or(&"".to_string())).await;
+        self.mc.reload_edl_video(&stream_info).await?;
+        Ok(())
+    }
+
+    pub async fn download_danmaku(&self) -> anyhow::Result<()> {
+        let mut stream_info = self.sf.run().await?;
+        *self.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
+        self.dm.set_bili_video_cid(stream_info.get("bili_cid").unwrap_or(&"".to_string())).await;
+        let ff_task = async {
+            self.fc.write_danmaku_only_task().await?;
+            anyhow::Ok(())
+        };
+        let danmaku_task = async {
+            match self.cm.site {
+                crate::config::Site::BiliVideo => {
+                    let _ = self.dm.run_bilivideo(1.0).await;
+                }
+                crate::config::Site::BahaVideo => {
+                    let _ = self.dm.run_baha().await;
+                }
+                _ => todo!(),
+            }
+            anyhow::Ok(())
+        };
+        let (_ff_res, _st_res) = tokio::join!(ff_task, danmaku_task);
         Ok(())
     }
 }

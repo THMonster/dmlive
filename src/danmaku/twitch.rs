@@ -1,10 +1,12 @@
 use crate::dmlerr;
-use futures::{stream::StreamExt, SinkExt};
+use bytes::Bytes;
+use futures::{SinkExt, stream::StreamExt};
 use regex::Regex;
 use reqwest::Url;
-use std::collections::HashMap;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+use super::DMLDanmaku;
 
 const HEARTBEAT: &'static str = "PING";
 
@@ -31,18 +33,17 @@ impl Twitch {
         Ok(("wss://irc-ws.chat.twitch.tv".to_string(), reg_datas))
     }
 
-    fn decode_msg(&self, data: &mut [u8]) -> anyhow::Result<Vec<HashMap<String, String>>> {
+    fn decode_msg(&self, data: Bytes) -> anyhow::Result<Vec<DMLDanmaku>> {
         let mut ret = Vec::new();
-        let msg = String::from_utf8_lossy(data);
+        let msg = String::from_utf8_lossy(&data);
         for m in msg.split('\n') {
-            let mut d = std::collections::HashMap::new();
             let re = Regex::new(r#"display-name=([^;]+);"#).unwrap();
-            let name = match re.captures(m) {
+            let nick = match re.captures(m) {
                 Some(it) => it[1].to_string(),
                 _ => continue,
             };
             let re = Regex::new(r#"PRIVMSG [^:]+:(.+)"#).unwrap();
-            let content = match re.captures(m) {
+            let text = match re.captures(m) {
                 Some(it) => it[1].to_string(),
                 _ => continue,
             };
@@ -51,16 +52,19 @@ impl Twitch {
                 Some(it) => it[1].to_string(),
                 None => "ffffff".to_owned(),
             };
-            d.insert("msg_type".to_owned(), "danmaku".to_owned());
-            d.insert("name".to_owned(), name);
-            d.insert("content".to_owned(), content);
-            d.insert("color".to_owned(), color);
-            ret.push(d);
+            let dml_dm = DMLDanmaku {
+                time: 0,
+                text,
+                nick,
+                color,
+                position: 0,
+            };
+            ret.push(dml_dm);
         }
         Ok(ret)
     }
 
-    pub async fn run(&self, url: &str, dtx: async_channel::Sender<(String, String, String)>) -> anyhow::Result<()> {
+    pub async fn run(&self, url: &str, dtx: async_channel::Sender<DMLDanmaku>) -> anyhow::Result<()> {
         let (ws, mut reg_datas) = self.get_ws_info(url).await?;
         let (ws_stream, _) = connect_async(&ws).await?;
         let (mut ws_write, mut ws_read) = ws_stream.split();
@@ -76,16 +80,9 @@ impl Twitch {
         let recv_task = async {
             while let Some(m) = ws_read.next().await {
                 let m = m?;
-                let mut dm = self.decode_msg(m.into_data().as_mut())?;
-                for mut d in dm.drain(..) {
-                    if d.remove("msg_type").unwrap_or("other".into()).eq("danmaku") {
-                        dtx.send((
-                            d.remove("color").unwrap_or("ffffff".into()),
-                            d.remove("name").unwrap_or("unknown".into()),
-                            d.remove("content").unwrap_or("".into()),
-                        ))
-                        .await?;
-                    }
+                let mut dm = self.decode_msg(m.into_data())?;
+                for d in dm.drain(..) {
+                    dtx.send(d).await?;
                 }
             }
             anyhow::Ok(())

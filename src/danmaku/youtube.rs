@@ -1,12 +1,13 @@
 use crate::{dmlerr, utils};
-use base64::{engine::general_purpose, Engine};
+use base64::{Engine, engine::general_purpose};
 use chrono::prelude::*;
 use log::*;
 use regex::Regex;
 use reqwest::Client;
-use serde_json::{json, Value};
-use std::collections::HashMap;
-use tokio::time::{sleep, Duration};
+use serde_json::{Value, json};
+use tokio::time::{Duration, sleep};
+
+use super::DMLDanmaku;
 
 const YTB_KEY: &'static [u8] =
     b"eW91dHViZWkvdjEvbGl2ZV9jaGF0L2dldF9saXZlX2NoYXQ/a2V5PUFJemFTeUFPX0ZKMlNscVU4UTRTVEVITEdDaWx3X1k5XzExcWNXOA==";
@@ -116,18 +117,14 @@ impl Youtube {
         Ok((vid, cid))
     }
 
-    fn decode_msg(&self, j: &Value) -> anyhow::Result<HashMap<String, String>> {
-        let mut d = std::collections::HashMap::new();
+    fn decode_msg(&self, j: &Value) -> anyhow::Result<DMLDanmaku> {
         let renderer = j.pointer("/addChatItemAction/item/liveChatTextMessageRenderer").ok_or_else(|| dmlerr!())?;
-        d.insert(
-            "name".to_owned(),
-            renderer
-                .pointer("/authorName/simpleText")
-                .ok_or_else(|| dmlerr!())?
-                .as_str()
-                .ok_or_else(|| dmlerr!())?
-                .to_string(),
-        );
+        let nick = renderer
+            .pointer("/authorName/simpleText")
+            .ok_or_else(|| dmlerr!())?
+            .as_str()
+            .ok_or_else(|| dmlerr!())?
+            .to_string();
         let runs = renderer.pointer("/message/runs").ok_or_else(|| dmlerr!())?.as_array().ok_or_else(|| dmlerr!())?;
         let mut msg = "".to_owned();
         for r in runs {
@@ -142,12 +139,17 @@ impl Youtube {
                 }
             }
         }
-        d.insert("content".to_owned(), msg);
-        d.insert("msg_type".to_owned(), "danmaku".to_owned());
-        Ok(d)
+        let dml_dm = DMLDanmaku {
+            time: 0,
+            text: msg,
+            nick,
+            color: "ffffff".to_string(),
+            position: 0,
+        };
+        Ok(dml_dm)
     }
 
-    async fn get_single_chat(&self, ctn: &mut String, client: &Client) -> anyhow::Result<Vec<HashMap<String, String>>> {
+    async fn get_single_chat(&self, ctn: &mut String, client: &Client) -> anyhow::Result<Vec<DMLDanmaku>> {
         let mut ret = Vec::new();
         let body = json!({
             "context": {
@@ -203,7 +205,7 @@ impl Youtube {
         Ok(ret)
     }
 
-    pub async fn run(&self, url: &str, dtx: async_channel::Sender<(String, String, String)>) -> anyhow::Result<()> {
+    pub async fn run(&self, url: &str, dtx: async_channel::Sender<DMLDanmaku>) -> anyhow::Result<()> {
         let client =
             reqwest::Client::builder().user_agent(self.ua.clone()).connect_timeout(Duration::from_secs(10)).build()?;
         let (vid, cid) = self.get_room_info(url, &client).await?;
@@ -222,19 +224,12 @@ impl Youtube {
                 Ok(mut dm) => {
                     itvl = 2000usize.saturating_div(if dm.len() == 0 { 1 } else { dm.len() }) as u64;
                     for d in dm.drain(..) {
-                        if d.get("msg_type").unwrap_or(&"other".into()).eq("danmaku") {
-                            dtx.send((
-                                d.get("color").unwrap_or(&"ffffff".into()).into(),
-                                d.get("name").unwrap_or(&"unknown".into()).into(),
-                                d.get("content").unwrap_or(&" ".into()).into(),
-                            ))
-                            .await?;
-                            if itvl < 50 {
-                            } else if itvl > 500 {
-                                sleep(Duration::from_millis(500)).await;
-                            } else {
-                                sleep(Duration::from_millis(itvl)).await;
-                            }
+                        dtx.send(d).await?;
+                        if itvl < 50 {
+                        } else if itvl > 500 {
+                            sleep(Duration::from_millis(500)).await;
+                        } else {
+                            sleep(Duration::from_millis(itvl)).await;
                         }
                     }
                 }

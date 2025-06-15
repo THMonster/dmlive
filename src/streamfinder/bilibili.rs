@@ -22,7 +22,7 @@ impl Bilibili {
         Bilibili { cm }
     }
 
-    pub async fn get_live(&self, room_url: &str) -> Result<HashMap<String, String>> {
+    pub async fn get_live(&self, room_url: &str) -> Result<HashMap<&'static str, String>> {
         let rid = Url::parse(room_url)?
             .path_segments()
             .ok_or_else(|| dmlerr!())?
@@ -76,7 +76,7 @@ impl Bilibili {
             .then(|| 0)
             .ok_or_else(|| dmlerr!())?;
         ret.insert(
-            String::from("title"),
+            "title",
             format!(
                 "{} - {}",
                 j.pointer("/title").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
@@ -103,13 +103,13 @@ impl Bilibili {
                 return self.get_live_new(room_url).await;
             }
         };
-        ret.insert(String::from("url"), url.to_string());
+        ret.insert("url", url.to_string());
 
         Ok(ret)
     }
 
     #[allow(unused)]
-    pub async fn get_live_new(&self, room_url: &str) -> Result<HashMap<String, String>> {
+    pub async fn get_live_new(&self, room_url: &str) -> Result<HashMap<&'static str, String>> {
         let rid = Url::parse(room_url)?
             .path_segments()
             .ok_or_else(|| dmlerr!())?
@@ -153,7 +153,7 @@ impl Bilibili {
         info!("{}", &resp.to_string());
         let j = resp.pointer("/data/playurl_info/playurl/stream/0/format/0/codec/0").ok_or_else(|| dmlerr!())?;
         ret.insert(
-            String::from("url"),
+            "url",
             format!(
                 "{}{}{}",
                 j.pointer("/url_info/0/host").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
@@ -165,7 +165,7 @@ impl Bilibili {
         param1.push(("room_id", rid.as_str()));
         let resp = client.get(BILI_API2).query(&param1).send().await?.json::<serde_json::Value>().await?;
         ret.insert(
-            String::from("title"),
+            "title",
             format!(
                 "{} - {}",
                 resp.pointer("/data/room_info/title").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
@@ -256,8 +256,8 @@ impl Bilibili {
         Ok((bvid, cid, final_title, artist))
     }
 
-    pub async fn get_video(&self, page: usize) -> Result<Vec<String>> {
-        let f1 = |j: &serde_json::Value, ret: &mut Vec<_>| -> _ {
+    pub async fn get_video(&self, page: usize) -> Result<HashMap<&'static str, String>> {
+        let f1 = |j: &serde_json::Value, ret: &mut HashMap<_, _>| -> _ {
             let mut videos = HashMap::new();
             let mut audios = HashMap::new();
             for ele in j.pointer("/dash/video").ok_or_else(|| dmlerr!())?.as_array().unwrap() {
@@ -306,8 +306,14 @@ impl Bilibili {
                     ul.iter().find(|&&x| !x.contains("mcdn")).ok_or_else(|| dmlerr!())?.to_string(),
                 );
             }
-            ret.push(videos.iter().max_by_key(|x| x.0).unwrap().1.to_string());
-            ret.push(audios.iter().max_by_key(|x| x.0).unwrap().1.to_string());
+            ret.insert(
+                "url_v",
+                videos.iter().max_by_key(|x| x.0).unwrap().1.to_string(),
+            );
+            ret.insert(
+                "url_a",
+                audios.iter().max_by_key(|x| x.0).unwrap().1.to_string(),
+            );
             anyhow::Ok(())
         };
 
@@ -316,7 +322,8 @@ impl Bilibili {
         } else {
             get_cookies_from_browser(&self.cm.cookies_from_browser, ".bilibili.com").await?
         };
-        let mut ret: Vec<String> = Vec::new();
+        let mut ret = HashMap::new();
+        ret.insert("url", "".to_string());
         let client = reqwest::Client::builder()
             .user_agent(crate::utils::gen_ua_safari())
             .connect_timeout(tokio::time::Duration::from_secs(10))
@@ -328,8 +335,8 @@ impl Bilibili {
             let u = self.cm.bvideo_info.borrow().base_url.clone();
             // let (bvid, cid, title, referer, _season_type) = self.get_page_info_ep(&u, page).await?;
             let (_bvid, cid, title, link) = self.get_page_info_ep(&u, page).await?;
-            ret.push(title);
-            ret.push(cid.clone());
+            ret.insert("title", title);
+            ret.insert("bili_cid", cid);
             let resp =
                 client.get(&link).header("Referer", &link).header("Cookie", cookies).send().await?.text().await?;
             let re = Regex::new(r"const\s*playurlSSRData\s*=\s*(\{.+\})").unwrap();
@@ -349,8 +356,6 @@ impl Bilibili {
             param1.push(("p", p));
             let resp = client.get(&u).header("Cookie", &cookies).query(&param1).send().await?.text().await?;
             let (bvid, cid, title, _artist) = self.get_page_info(&resp, page).await?;
-            ret.push(title);
-            ret.push(cid.clone());
             // println!("{} {} {} {}", &bvid, &cid, &title, &artist);
             // let re = Regex::new(r"window.__playinfo__\s*=\s*(\{.+?\})\s*</script>").unwrap();
             // let j: serde_json::Value =
@@ -358,7 +363,7 @@ impl Bilibili {
             let keys = crate::utils::bili_wbi::get_wbi_keys(&cookies).await?;
             let params2 = vec![
                 ("bvid", bvid),
-                ("cid", cid),
+                ("cid", cid.clone()),
                 ("qn", String::from("0")),
                 ("fnval", String::from("848")),
                 ("fnver", String::from("0")),
@@ -373,6 +378,8 @@ impl Bilibili {
                 .json::<serde_json::Value>()
                 .await?;
             let j = j.pointer("/data").ok_or_else(|| dmlerr!())?;
+            ret.insert("title", title);
+            ret.insert("bili_cid", cid);
             f1(&j, &mut ret)?;
         }
         Ok(ret)

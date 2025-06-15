@@ -5,6 +5,7 @@ use crate::utils::is_android;
 use crate::Args;
 use reqwest::Url;
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::Path;
 use tokio::{fs::OpenOptions, io::AsyncWriteExt};
 
@@ -19,6 +20,11 @@ pub enum RunMode {
     Record,
 }
 
+pub enum RecordMode {
+    All,
+    Danmaku,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum StreamType {
     FLV,
@@ -30,10 +36,17 @@ pub enum StreamType {
 pub enum Site {
     BiliLive,
     BiliVideo,
+    BahaVideo,
     DouyuLive,
     HuyaLive,
     TwitchLive,
     YoutubeLive,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SiteType {
+    Live,
+    Video,
 }
 
 pub struct ConfigManager {
@@ -50,7 +63,9 @@ pub struct ConfigManager {
     pub room_url: String,
     pub http_address: Option<String>,
     pub run_mode: RunMode,
+    pub record_mode: RecordMode,
     pub site: Site,
+    pub site_type: SiteType,
     pub stream_type: Cell<StreamType>,
     pub bvideo_info: RefCell<BVideoInfo>,
     pub title: RefCell<String>,
@@ -73,6 +88,7 @@ impl ConfigManager {
         let c = String::from_utf8_lossy(&c);
         let c = config::load_config(&c).unwrap();
         let room_url = args.url.clone();
+        let mut site_type = SiteType::Live;
         let site = if room_url.contains("live.bilibili.com/") {
             Site::BiliLive
         } else if room_url.contains("bilibili.com/") {
@@ -90,7 +106,17 @@ impl ConfigManager {
                 bvinfo.video_type = BVideoType::Bangumi;
                 bvinfo.base_url.push_str(format!("https://www.bilibili.com/bangumi/play/{}", vid).as_str());
             }
+            site_type = SiteType::Video;
             Site::BiliVideo
+        } else if room_url.contains("ani.gamer.com.tw/") {
+            let u = Url::parse(&room_url).unwrap();
+            for q in u.query_pairs() {
+                if q.0.eq("p") {
+                    bvinfo.current_page = q.1.parse().unwrap();
+                }
+            }
+            site_type = SiteType::Video;
+            Site::BahaVideo
         } else if room_url.contains("douyu.com/") {
             Site::DouyuLive
         } else if room_url.contains("huya.com/") {
@@ -102,16 +128,23 @@ impl ConfigManager {
         } else {
             panic!("unknown url")
         };
-        let run_mode = if args.record || args.http_address.is_some() {
+        let run_mode = if args.record || args.http_address.is_some() || args.download_dm {
             RunMode::Record
         } else {
             RunMode::Play
+        };
+        let record_mode = if args.download_dm {
+            RecordMode::Danmaku
+        } else {
+            RecordMode::All
         };
         Self {
             room_url: room_url.replace("dmlive://", "https://"),
             stream_type: Cell::new(StreamType::FLV),
             run_mode,
+            record_mode,
             site,
+            site_type,
             font_scale: Cell::new(c.font_scale.unwrap_or(1.0)),
             font_alpha: Cell::new(c.font_alpha.unwrap_or(0.0)),
             danmaku_speed: Cell::new(c.danmaku_speed.unwrap_or(8000)),
@@ -136,14 +169,14 @@ impl ConfigManager {
         Ok(())
     }
 
-    pub fn set_stream_type(&self, url: &str) {
-        if url.contains(".m3u8") {
+    pub fn set_stream_type(&self, stream_info: &HashMap<&str, String>) {
+        if stream_info["url"].contains(".m3u8") {
             if self.site == Site::BiliLive {
                 self.stream_type.set(StreamType::HLS(1)); // for m4s inside
             } else {
                 self.stream_type.set(StreamType::HLS(0)); // for ts inside
             }
-        } else if url.contains(".flv") {
+        } else if stream_info["url"].contains(".flv") {
             self.stream_type.set(StreamType::FLV);
         } else {
             self.stream_type.set(StreamType::DASH);

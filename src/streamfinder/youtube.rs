@@ -13,12 +13,12 @@ impl Youtube {
     }
 
     #[allow(dead_code)]
-    async fn decode_mpd(&self, client: &Client, url: &str) -> anyhow::Result<String> {
+    async fn decode_mpd(&self, client: &Client, url: &str) -> anyhow::Result<HashMap<&'static str, String>> {
         info!("{}", url);
-        let mut dash_urls = "".to_owned();
+        let mut ret = HashMap::new();
         let mut video_base_url = Vec::new();
         let mut audio_base_url = None;
-        let mut sq = 0;
+        let mut sq = "";
         let resp = client
             .get(url)
             .header("User-Agent", crate::utils::gen_ua())
@@ -66,7 +66,7 @@ impl Youtube {
                 for seg in e.descendants() {
                     if seg.tag_name().name().eq("SegmentURL") {
                         let spl: Vec<_> = seg.attribute("media").unwrap_or("").split('/').collect();
-                        sq = spl[1].parse()?;
+                        sq = spl[1];
                     }
                 }
             }
@@ -76,16 +76,13 @@ impl Youtube {
         }
 
         if !video_base_url.is_empty() && audio_base_url.is_some() {
-            dash_urls.push_str(video_base_url.last().unwrap());
-            dash_urls.push('\n');
-            dash_urls.push_str(audio_base_url.unwrap());
-            dash_urls.push('\n');
-            dash_urls.push_str(format!("{}", &sq).as_str());
-        }
-        if dash_urls.is_empty() {
-            Err(anyhow::anyhow!("no dash url found"))
+            ret.insert("url", video_base_url.last().unwrap().to_string());
+            ret.insert("url_v", video_base_url.last().unwrap().to_string());
+            ret.insert("url_a", audio_base_url.unwrap().to_string());
+            ret.insert("sq", sq.to_string());
+            Ok(ret)
         } else {
-            Ok(dash_urls)
+            Err(anyhow::anyhow!("no dash url found"))
         }
     }
 
@@ -114,7 +111,32 @@ impl Youtube {
         }
     }
 
-    pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<String, String>> {
+    pub async fn get_live_info(&self, client: &Client, room_url: &str) -> anyhow::Result<HashMap<&'static str, String>> {
+        let resp = client
+            .get(room_url)
+            .header("Accept-Language", "en-US")
+            .header("Connection", "keep-alive")
+            .header("Referer", "https://www.youtube.com/")
+            .send()
+            .await?
+            .text()
+            .await?;
+        let re = Regex::new(r"ytInitialPlayerResponse\s*=\s*(\{.+?\});.*?</script>").unwrap();
+        let j: serde_json::Value = serde_json::from_str(&re.captures(&resp).ok_or_else(|| dmlerr!())?[1])?;
+        let title = j.pointer("/videoDetails/title").ok_or_else(|| dmlerr!())?.as_str().unwrap().to_string();
+        if !(j.pointer("/videoDetails/isLive").ok_or_else(|| dmlerr!())?.as_bool().unwrap()) {
+            return Err(anyhow::anyhow!("not on air!"));
+        }
+        let mpd_url = j.pointer("/streamingData/dashManifestUrl").ok_or_else(|| dmlerr!())?.as_str().unwrap();
+        // let hls_url = j.pointer("/streamingData/hlsManifestUrl").ok_or_else(|| dmlerr!())?.as_str().unwrap();
+
+        // let urls = self.decode_m3u8(&client, &hls_url).await?;
+        let mut ret = self.decode_mpd(&client, &mpd_url).await?;
+        ret.insert("title", title);
+        Ok(ret)
+    }
+
+    pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<&'static str, String>> {
         let client = reqwest::Client::builder()
             .user_agent(utils::gen_ua())
             .timeout(tokio::time::Duration::from_secs(10))
@@ -136,29 +158,8 @@ impl Youtube {
             let vid = url.query_pairs().find(|q| q.0.eq("v")).unwrap().1;
             format!("https://www.youtube.com/watch?v={}", &vid)
         };
-        let resp = client
-            .get(&room_url)
-            .header("Accept-Language", "en-US")
-            .header("Referer", "https://www.youtube.com/")
-            .send()
-            .await?
-            .text()
-            .await?;
-        let re = Regex::new(r"ytInitialPlayerResponse\s*=\s*(\{.+?\});.*?</script>").unwrap();
-        let j: serde_json::Value = serde_json::from_str(&re.captures(&resp).ok_or_else(|| dmlerr!())?[1])?;
-        let title = j.pointer("/videoDetails/title").ok_or_else(|| dmlerr!())?.as_str().unwrap().to_string();
-        if !(j.pointer("/videoDetails/isLive").ok_or_else(|| dmlerr!())?.as_bool().unwrap()) {
-            return Err(anyhow::anyhow!("not on air!"));
-        }
-        let mpd_url = j.pointer("/streamingData/dashManifestUrl").ok_or_else(|| dmlerr!())?.as_str().unwrap();
-        // let hls_url = j.pointer("/streamingData/hlsManifestUrl").ok_or_else(|| dmlerr!())?.as_str().unwrap();
-
-        // let urls = self.decode_m3u8(&client, &hls_url).await?;
-        let urls = self.decode_mpd(&client, &mpd_url).await?;
-
-        let mut ret = HashMap::new();
-        ret.insert(String::from("url"), urls);
-        ret.insert(String::from("title"), title);
+        let mut ret = self.get_live_info(&client, &room_url).await?;
+        ret.insert("room_url", room_url);
         Ok(ret)
     }
 }

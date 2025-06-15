@@ -55,7 +55,7 @@ impl TarsEncoder {
                 self.buf.put_u8(head);
             } else {
                 let head: u16 = u16::from((0xF0u8) | tars_type.value()) << 8 | u16::from(tag);
-                self.buf.put_u16_be(head)
+                self.buf.put_u16(head)
             }
             Ok(())
         }
@@ -126,7 +126,7 @@ impl TarsEncoderNormalTrait for TarsEncoder {
         } else {
             self.put_head(tag, EnInt16)?;
             self.check_maybe_resize(mem::size_of::<i16>());
-            self.buf.put_i16_be(ele);
+            self.buf.put_i16(ele);
             Ok(())
         }
     }
@@ -137,7 +137,7 @@ impl TarsEncoderNormalTrait for TarsEncoder {
         } else {
             self.put_head(tag, EnInt32)?;
             self.check_maybe_resize(mem::size_of::<i32>());
-            self.buf.put_i32_be(ele);
+            self.buf.put_i32(ele);
             Ok(())
         }
     }
@@ -148,7 +148,7 @@ impl TarsEncoderNormalTrait for TarsEncoder {
         } else {
             self.put_head(tag, EnInt64)?;
             self.check_maybe_resize(mem::size_of::<i64>());
-            self.buf.put_i64_be(ele);
+            self.buf.put_i64(ele);
             Ok(())
         }
     }
@@ -171,7 +171,7 @@ impl TarsEncoderNormalTrait for TarsEncoder {
         } else {
             self.put_head(tag, EnFloat)?;
             self.check_maybe_resize(mem::size_of::<f32>());
-            self.buf.put_f32_be(ele)
+            self.buf.put_f32(ele)
         }
         Ok(())
     }
@@ -181,7 +181,7 @@ impl TarsEncoderNormalTrait for TarsEncoder {
         } else {
             self.put_head(tag, EnDouble)?;
             self.check_maybe_resize(mem::size_of::<f64>());
-            self.buf.put_f64_be(ele)
+            self.buf.put_f64(ele)
         }
         Ok(())
     }
@@ -195,7 +195,7 @@ impl TarsEncoderNormalTrait for TarsEncoder {
             match u8::try_from(len) {
                 Ok(l) => {
                     self.buf.put_u8(l);
-                    self.buf.put(ele);
+                    self.buf.put(ele.as_bytes());
                     Ok(())
                 }
                 Err(_) => Err(EncodeErr::ConvertU8Err),
@@ -203,8 +203,8 @@ impl TarsEncoderNormalTrait for TarsEncoder {
         } else if len <= u32::max_value() as usize {
             // encode as string4
             self.put_head(tag, EnString4)?;
-            self.buf.put_u32_be(len as u32);
-            self.buf.put(ele);
+            self.buf.put_u32(len as u32);
+            self.buf.put(ele.as_bytes());
             Ok(())
         } else {
             Err(EncodeErr::DataTooBigErr)

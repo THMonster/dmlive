@@ -24,6 +24,9 @@ pub struct Args {
     #[clap(short = 'r', long, action)]
     record: bool,
 
+    #[clap(long = "download-dm", action)]
+    download_dm: bool,
+
     #[clap(short = 'w', long = "wait-interval", value_parser)]
     wait_interval: Option<u64>,
 
@@ -57,6 +60,7 @@ fn main() {
         4 => LevelFilter::Error,
         _ => LevelFilter::Info,
     };
+    // rustls::crypto::ring::default_provider().install_default().expect("Failed to install default rustls crypto provider");
     env_logger::Builder::new().filter(None, log_level).init();
 
     Builder::new_current_thread().enable_all().build().unwrap().block_on(async move {
