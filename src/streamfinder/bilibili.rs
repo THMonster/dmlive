@@ -37,32 +37,6 @@ impl Bilibili {
         let mut ret = HashMap::new();
         let mut param1 = Vec::new();
 
-        // let resp = client.get(format!("https://live.bilibili.com/{}", rid.as_str())).send().await?.text().await?;
-        // let re = Regex::new(r"window.__NEPTUNE_IS_MY_WAIFU__\s*=\s*(\{.+?\})\s*</script>").unwrap();
-        // let j: serde_json::Value =
-        //     serde_json::from_str(re.captures(&resp).ok_or_else(|| dmlerr!())?[1].to_string().as_ref())?;
-        // j.pointer("/roomInfoRes/data/room_info/live_status")
-        //     .ok_or_else(|| dmlerr!())?
-        //     .as_i64()
-        //     .ok_or_else(|| dmlerr!())?
-        //     .eq(&1)
-        //     .then(|| 0)
-        //     .ok_or_else(|| dmlerr!())?;
-        // ret.insert(
-        //     String::from("title"),
-        //     format!(
-        //         "{} - {}",
-        //         j.pointer("/roomInfoRes/data/room_info/title")
-        //             .ok_or_else(|| dmlerr!())?
-        //             .as_str()
-        //             .ok_or_else(|| dmlerr!())?,
-        //         j.pointer("/roomInfoRes/data/anchor_info/base_info/uname")
-        //             .ok_or_else(|| dmlerr!())?
-        //             .as_str()
-        //             .ok_or_else(|| dmlerr!())?
-        //     ),
-        // );
-
         param1.push(("room_ids", rid.as_str()));
         param1.push(("req_biz", "web_room_componet"));
         let resp = client.get(BILI_API2).query(&param1).send().await?.json::<serde_json::Value>().await?;
@@ -98,18 +72,16 @@ impl Bilibili {
             .await?;
         info!("{}", &resp.to_string());
         let url = match resp.pointer("/data/durl/0/url").ok_or_else(|| dmlerr!()) {
-            Ok(it) => it.as_str().unwrap(),
-            Err(_) => {
-                return self.get_live_new(room_url).await;
-            }
+            Ok(it) => it.as_str().unwrap().to_string(),
+            Err(_) => self.get_live_new(room_url).await?,
         };
-        ret.insert("url", url.to_string());
-
+        ret.insert("url", url);
         Ok(ret)
     }
 
     #[allow(unused)]
-    pub async fn get_live_new(&self, room_url: &str) -> Result<HashMap<&'static str, String>> {
+    pub async fn get_live_new(&self, room_url: &str) -> Result<String> {
+        // pub async fn get_live_new(&self, room_url: &str) -> Result<HashMap<&'static str, String>> {
         let rid = Url::parse(room_url)?
             .path_segments()
             .ok_or_else(|| dmlerr!())?
@@ -121,7 +93,6 @@ impl Bilibili {
             .connect_timeout(tokio::time::Duration::from_secs(10))
             .build()?;
 
-        let mut ret = HashMap::new();
         let mut param1 = Vec::new();
         // room_id=114514&protocol=0,1&format=0,1,2&codec=0,1,2&qn=10000&platform=web&ptype=8&dolby=5&panorama=1
         // param1.push(("no_playurl", "0"));
@@ -152,30 +123,12 @@ impl Bilibili {
             .await?;
         info!("{}", &resp.to_string());
         let j = resp.pointer("/data/playurl_info/playurl/stream/0/format/0/codec/0").ok_or_else(|| dmlerr!())?;
-        ret.insert(
-            "url",
-            format!(
-                "{}{}{}",
-                j.pointer("/url_info/0/host").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
-                j.pointer("/base_url").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
-                j.pointer("/url_info/0/extra").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
-            ),
-        );
-        param1.clear();
-        param1.push(("room_id", rid.as_str()));
-        let resp = client.get(BILI_API2).query(&param1).send().await?.json::<serde_json::Value>().await?;
-        ret.insert(
-            "title",
-            format!(
-                "{} - {}",
-                resp.pointer("/data/room_info/title").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
-                resp.pointer("/data/anchor_info/base_info/uname")
-                    .ok_or_else(|| dmlerr!())?
-                    .as_str()
-                    .ok_or_else(|| dmlerr!())?
-            ),
-        );
-        Ok(ret)
+        return Ok(format!(
+            "{}{}{}",
+            j.pointer("/url_info/0/host").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
+            j.pointer("/base_url").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
+            j.pointer("/url_info/0/extra").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?
+        ));
     }
 
     pub async fn get_page_info_ep(&self, video_url: &str, mut page: usize) -> Result<(String, String, String, String)> {
@@ -342,7 +295,7 @@ impl Bilibili {
             let re = Regex::new(r"const\s*playurlSSRData\s*=\s*(\{.+\})").unwrap();
             let j: serde_json::Value = serde_json::from_str(re.captures(&resp).ok_or_else(|| dmlerr!())?[1].as_ref())?;
             // println!("{:?}", &resp);
-            let j = j.pointer("/result/video_info").ok_or_else(|| dmlerr!())?;
+            let j = j.pointer("/data/result/video_info").ok_or_else(|| dmlerr!())?;
             // println!("{:?}", &j);
             f1(&j, &mut ret)?;
         } else {

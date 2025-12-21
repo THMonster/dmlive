@@ -9,8 +9,7 @@ mod twitch;
 mod youtube;
 
 use crate::ipcmanager::IPCManager;
-use crate::{config::ConfigManager, dmlive::DMLMessage, ipcmanager::DMLStream};
-use anyhow::anyhow;
+use crate::{config::ConfigManager, dmlive::DMLMessage};
 use anyhow::Result;
 use async_channel::Sender;
 use chrono::{Duration, NaiveTime};
@@ -18,7 +17,6 @@ use log::info;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::collections::VecDeque;
 use std::ops::{BitXor, Not};
 use std::rc::Rc;
 use tokio::io::AsyncWriteExt;
@@ -192,7 +190,7 @@ impl Danmaku {
             .round() as usize
     }
 
-    async fn launch_single_danmaku(&self, d: &DMLDanmaku, socket: &mut Box<dyn DMLStream>) -> Result<()> {
+    fn launch_single_danmaku(&self, d: &DMLDanmaku, cluster: &RefCell<mkv_header::DMKVCluster>) -> Result<()> {
         let mut out_of_channel = false;
         let mut f1 = || {
             d.color.trim().is_empty().not().then(|| {})?;
@@ -204,7 +202,7 @@ impl Danmaku {
                 })
                 .map(|it| (it, display_length))
         };
-        let cluster = if d.position == 0 {
+        let (ass, du) = if d.position == 0 {
             match f1() {
                 Some((avail_dc, display_length)) => {
                     let ass = format!(
@@ -221,15 +219,15 @@ impl Danmaku {
                         if self.show_nick.get() { ": " } else { "" },
                     )
                     .into_bytes();
-                    mkv_header::DMKVCluster::new(ass, d.time as u64, self.cm.danmaku_speed.get())
+                    (ass, self.cm.danmaku_speed.get())
                 }
                 None => {
                     let ass = format!(
-                        r"{},0,Default,dmlive-empty,20,20,2,,",
+                        r"{},0,Default,dmlive-empty,0,0,0,,",
                         self.read_order.get()
                     )
                     .into_bytes();
-                    mkv_header::DMKVCluster::new(ass, d.time as u64, 1)
+                    (ass, 0)
                 }
             }
         } else {
@@ -246,19 +244,19 @@ impl Danmaku {
                 &d.text,
             )
             .into_bytes();
-            mkv_header::DMKVCluster::new(ass, d.time as u64, self.cm.danmaku_speed.get())
+            (ass, self.cm.danmaku_speed.get())
         };
-        self.read_order.set(self.read_order.get() + 1);
-        cluster.write_to_socket(socket).await.map_err(|_| anyhow!("socket error"))?;
+        self.read_order.update(|x| x + 1);
+        let _ = cluster.borrow_mut().add_ass_block(d.time as u64, ass, du);
         // out_of_channel.not().then(|| {}).ok_or_else(|| anyhow!("channels unavailable"))
         Ok(())
     }
 
+    #[allow(unreachable_code)]
     async fn launch_live_danmaku_task(&self, rx: async_channel::Receiver<DMLDanmaku>) -> Result<()> {
         let now = std::time::Instant::now();
+        let padding_time = Cell::new(0);
         let mut socket = self.ipc_manager.get_danmaku_socket().await?;
-        let mut dm_queue = VecDeque::new();
-        // let emoji_re = regex::Regex::new(EMOJI_RE).unwrap();
         let mut empty_dm = DMLDanmaku {
             text: "".to_string(),
             nick: "".to_string(),
@@ -266,47 +264,44 @@ impl Danmaku {
             time: 0,
             position: 0,
         };
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(200));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        socket.write_all(&mkv_header::get_mkv_header()).await?;
-        let mut printed = false;
-        'l1: loop {
-            while let Ok(it) = rx.try_recv() {
-                dm_queue.push_back(it);
-            }
-            let mut launch = true;
-            while launch {
-                let dml_dm = dm_queue.get_mut(0).ok_or_else(|| launch = false).unwrap_or(&mut empty_dm);
-                if !dml_dm.text.is_empty() && !printed {
-                    if !self.cm.quiet {
-                        println!("[{}] {}", &dml_dm.nick, &dml_dm.text);
-                        printed = true;
-                    }
-                    if !self.fk.dm_check(&dml_dm.text) {
-                        let _ = dm_queue.pop_front();
-                        continue;
-                    }
+        let mkv_cluster = RefCell::new(mkv_header::DMKVCluster::new());
+        socket.write_all(mkv_header::MKV_HEADER).await?;
+        let t1 = async {
+            while let Ok(mut dml_dm) = rx.recv().await {
+                if !self.cm.quiet {
+                    println!("[{}] {}", &dml_dm.nick, &dml_dm.text);
                 }
-                // let da = emoji_re.replace_all(da, "[em]");
-                dml_dm.time = now.elapsed().as_millis() as i64;
-                match self.launch_single_danmaku(&dml_dm, &mut socket).await {
-                    Ok(_) => {
-                        let _ = dm_queue.pop_front();
-                        printed = false;
-                    }
-                    Err(e) => {
-                        info!("danmaku send error: {}", &e);
-                        if e.to_string().contains("socket error") {
-                            break 'l1;
-                        } else {
-                            launch = false;
-                        }
-                    }
-                };
+                if !self.fk.dm_check(&dml_dm.text) {
+                    continue;
+                }
+                dml_dm.time = now.elapsed().as_millis() as i64 + padding_time.get();
+                self.launch_single_danmaku(&dml_dm, &mkv_cluster)?;
             }
-            if self.read_order.get() > 70 {
+            anyhow::Ok(())
+        };
+
+        let t2 = async {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(1000));
+            mkv_cluster.borrow_mut().reset(0);
+            for _ in 0..2000 {
+                empty_dm.time = padding_time.get();
+                padding_time.update(|x| x + 1);
+                self.launch_single_danmaku(&empty_dm, &mkv_cluster)?;
+            }
+            loop {
                 interval.tick().await;
+                let data = mkv_cluster.borrow().write_to_bytes();
+                let now_ts = now.elapsed().as_millis() as i64 + padding_time.get();
+                mkv_cluster.borrow_mut().reset(now_ts as u64);
+                empty_dm.time = now_ts;
+                self.launch_single_danmaku(&empty_dm, &mkv_cluster)?;
+                socket.write_all(&data).await?;
             }
+            anyhow::Ok(())
+        };
+        tokio::select! {
+            it = t1 => { it?; },
+            it = t2 => { it?; },
         }
         Ok(())
     }

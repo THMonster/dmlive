@@ -1,8 +1,8 @@
 use crate::config::{RunMode, Site, StreamType};
 use crate::ipcmanager::IPCManager;
 use crate::{config::ConfigManager, dmlive::DMLMessage};
-use anyhow::anyhow;
 use anyhow::Result;
+use anyhow::anyhow;
 use log::info;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -95,7 +95,7 @@ impl FfmpegControl {
         ret.arg("-i").arg(self.ipc_manager.get_video_socket_path());
         ret.args(["-map", "0:v:0?", "-map", "0:a:0?"]);
         ret.args(["-c", "copy"]);
-        ret.args(["-f", "flv", "-"]);
+        ret.args(["-f", "matroska", "-"]);
         Ok(ret)
     }
 
@@ -104,6 +104,7 @@ impl FfmpegControl {
         ret.args(["-y", "-xerror"]);
         ret.arg("-hide_banner");
         ret.arg("-nostats");
+        // ret.args(["-use_wallclock_as_timestamps", "1"]);
         // ret.arg("-report");
         // ret.arg("-loglevel").arg("quiet");
         // ret.args(["-probesize", "204800"]);
@@ -141,10 +142,12 @@ impl FfmpegControl {
             _ => {
                 ret.arg("-i").arg(self.ipc_manager.get_video_socket_path());
                 ret.arg("-i").arg(self.ipc_manager.get_danmaku_socket_path());
-                ret.args(["-map", "0:v:0?", "-map", "0:a:0?", "-map", "1:s:0"]);
+                ret.args(["-map", "0:v:0?", "-map", "0:a:0?", "-map", "1:s:0?"]);
             }
         }
-        ret.args(&["-c", "copy"]);
+        ret.args(&["-c:v", "copy"]);
+        ret.args(&["-c:a", "copy"]);
+        ret.args(&["-c:s", "ass"]);
         ret.args(&[
             "-metadata",
             format!("title={}", self.cm.title.borrow()).as_str(),
@@ -188,7 +191,12 @@ impl FfmpegControl {
         let dm_re = regex::Regex::new(r"Stream #[0-9:]+\s*Subtitle:\s*ass").unwrap();
         let mut vinfo_sent = false;
         let mut ffready_sent = false;
-        while let Some(line) = reader.next_line().await.unwrap_or(None) {
+        let mut retry = 0;
+        // while let Some(line) = reader.next_line().await.unwrap_or(Some("".to_string())) {
+        while let Some(line) = reader.next_line().await.unwrap_or_else(|_| {
+            retry += 1;
+            if retry < 5 { Some("".to_string()) } else { None }
+        }) {
             info!("{}", &line);
             let line = line.trim();
             if let Some(_it) = pts_re.captures(&line) {
@@ -214,7 +222,7 @@ impl FfmpegControl {
             }
         }
         // warn!("get video info failed!");
-        let _ = self.quit().await;
+        // let _ = self.quit().await;
         Ok(())
     }
 

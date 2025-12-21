@@ -11,7 +11,7 @@ tokio = { version = "1", features = ["full"] }
 # webpki-roots = "*"
 # rustls = { version = "*", features = ["ring"] }
 # tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
-tokio-tungstenite = { version = "0.26", features = ["native-tls-vendored"] }
+tokio-tungstenite = { version = "0.27", features = ["native-tls-vendored"] }
 reqwest = { version = "0.12", default-features = false, features = ["http2", "brotli", "deflate", "gzip", "json", "native-tls-vendored", "cookies"] }
 log = "0.4"
 env_logger = "0.11"
@@ -21,19 +21,19 @@ serde = { version = "1", features = ["derive"] }
 bincode = "2"
 rand = "0.9"
 regex = "1"
-fancy-regex = "0.14"
-uuid = { version = "1.16", features = ["v4"] }
+fancy-regex = "0.16"
+uuid = { version = "1.18", features = ["v4"] }
 chrono = "0.4"
 url = "2.5"
 urlencoding = "2.1"
 base64 = "0.22"
 md5 = "*"
 libc = "0.2"
-toml = "0.8"
+toml = "0.9"
 html-escape = "0.2"
 futures = "0.3"
 roxmltree = "0.20"
-async-channel = "2.3"
+async-channel = "2.5"
 directories = "6"
 anyhow = "1"
 bytes = "1.10"
