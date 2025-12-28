@@ -12,6 +12,7 @@ use tokio::{
     time::{Duration, sleep},
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message::Binary};
+// use wincode::{SchemaRead, SchemaWrite};
 
 use crate::dmlerr;
 
@@ -22,7 +23,7 @@ const API_ROOMINIT: &'static str = "https://api.live.bilibili.com/room/v1/Room/r
 const API_DMINFO: &'static str = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo";
 const WS_HEARTBEAT: &'static [u8] = b"\x00\x00\x00\x1f\x00\x10\x00\x01\x00\x00\x00\x02\x00\x00\x00\x01\x5b\x6f\x62\x6a\x65\x63\x74\x20\x4f\x62\x6a\x65\x63\x74\x5d";
 
-#[derive(Encode, Decode, PartialEq, Debug)]
+#[derive(Encode, Decode, Debug)]
 struct BiliDanmakuHeader {
     packet_len: u32,
     header_len: u16,
@@ -165,6 +166,7 @@ impl Bilibili {
                 break;
             }
             let h: BiliDanmakuHeader = bincode::decode_from_slice(&data[0..16], bc_config)?.0;
+            // let h: BiliDanmakuHeader = wincode::deserialize(&data[0..16])?;
             if data.len() < h.packet_len as usize {
                 break;
             }

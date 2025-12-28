@@ -1,6 +1,6 @@
 use crate::config::{RunMode, Site, StreamType};
-use crate::ipcmanager::IPCManager;
-use crate::{config::ConfigManager, dmlive::DMLMessage};
+use crate::dmlive::DMLContext;
+use crate::dmlive::DMLMessage;
 use anyhow::Result;
 use anyhow::anyhow;
 use log::info;
@@ -15,30 +15,26 @@ use tokio::{
 };
 
 pub struct FfmpegControl {
-    ipc_manager: Rc<IPCManager>,
-    cm: Rc<ConfigManager>,
+    ctx: Rc<DMLContext>,
     ff_stdin: RefCell<Option<ChildStdin>>,
-    mtx: async_channel::Sender<DMLMessage>,
 }
 impl FfmpegControl {
-    pub fn new(cm: Rc<ConfigManager>, im: Rc<IPCManager>, mtx: async_channel::Sender<DMLMessage>) -> Self {
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
         Self {
-            ipc_manager: im,
-            cm,
-            mtx,
+            ctx,
             ff_stdin: RefCell::new(None),
         }
     }
     pub async fn write_danmaku_only_task(&self) -> Result<()> {
-        let in_stream = self.ipc_manager.get_danmaku_socket_path();
-        let max_len = match self.cm.title.borrow().char_indices().nth(70) {
+        let in_stream = self.ctx.im.get_danmaku_socket_path();
+        let max_len = match self.ctx.cm.title.borrow().char_indices().nth(70) {
             Some(it) => it.0,
-            None => self.cm.title.borrow().len(),
+            None => self.ctx.cm.title.borrow().len(),
         };
         let now = chrono::Local::now();
         let filename = format!(
             "{} - {}.ass",
-            self.cm.title.borrow()[..max_len].replace('/', "-"),
+            self.ctx.cm.title.borrow()[..max_len].replace('/', "-"),
             now.format("%F %T")
         );
         let mut cmd = Command::new("ffmpeg");
@@ -58,15 +54,15 @@ impl FfmpegControl {
     }
 
     pub async fn write_record_task(&self) -> Result<()> {
-        let in_stream = self.ipc_manager.get_f2m_socket_path();
-        let max_len = match self.cm.title.borrow().char_indices().nth(70) {
+        let in_stream = self.ctx.im.get_f2m_socket_path();
+        let max_len = match self.ctx.cm.title.borrow().char_indices().nth(70) {
             Some(it) => it.0,
-            None => self.cm.title.borrow().len(),
+            None => self.ctx.cm.title.borrow().len(),
         };
         let now = chrono::Local::now();
         let filename = format!(
             "{} - {}.mkv",
-            self.cm.title.borrow()[..max_len].replace('/', "-"),
+            self.ctx.cm.title.borrow()[..max_len].replace('/', "-"),
             now.format("%F %T")
         );
         let mut cmd = Command::new("ffmpeg");
@@ -90,12 +86,13 @@ impl FfmpegControl {
         ret.args(["-y", "-xerror"]);
         ret.arg("-hide_banner");
         ret.arg("-nostats");
+        // ret.arg("-report");
         // ret.args(["-fflags", "+nobuffer"]);
         ret.args(["-probesize", "204800"]);
-        ret.arg("-i").arg(self.ipc_manager.get_video_socket_path());
+        ret.arg("-i").arg(self.ctx.im.get_video_socket_path());
         ret.args(["-map", "0:v:0?", "-map", "0:a:0?"]);
         ret.args(["-c", "copy"]);
-        ret.args(["-f", "matroska", "-"]);
+        ret.args(["-f", "flv", "-"]);
         Ok(ret)
     }
 
@@ -110,9 +107,9 @@ impl FfmpegControl {
         // ret.args(["-probesize", "204800"]);
         // ret.args(["-analyzeduration", "1000000", "-max_delay", "1000000"]);
         // ret.args(["-max_delay", "1000000"]);
-        match self.cm.stream_type.get() {
+        match self.ctx.cm.stream_type.get() {
             crate::config::StreamType::DASH => {
-                if self.cm.site == Site::BiliVideo {
+                if self.ctx.cm.site == Site::BiliVideo {
                     ret.args(&[
                         "-user_agent",
                         &crate::utils::gen_ua(),
@@ -128,43 +125,45 @@ impl FfmpegControl {
                     ]);
                     ret.arg("-i").arg(&stream_info["url_a"]);
                 } else {
-                    ret.arg("-i").arg(self.ipc_manager.get_video_socket_path());
-                    ret.arg("-i").arg(self.ipc_manager.get_audio_socket_path());
+                    ret.arg("-i").arg(self.ctx.im.get_video_socket_path());
+                    ret.arg("-i").arg(self.ctx.im.get_audio_socket_path());
                 }
-                ret.arg("-i").arg(self.ipc_manager.get_danmaku_socket_path());
-                ret.args(["-map", "0:v:0?", "-map", "1:a:0?", "-map", "2:s:0"]);
+                ret.arg("-i").arg(self.ctx.im.get_danmaku_socket_path());
+                ret.args(["-map", "0:v:0?", "-map", "1:a:0?", "-map", "2:s:0", "-map", "2:s:1?"]);
             }
             crate::config::StreamType::HLS(0) => {
                 ret.arg("-i").arg("-");
-                ret.arg("-i").arg(self.ipc_manager.get_danmaku_socket_path());
-                ret.args(["-map", "0:v:0?", "-map", "0:a:0?", "-map", "1:s:0"]);
+                ret.arg("-i").arg(self.ctx.im.get_danmaku_socket_path());
+                ret.args(["-map", "0:v:0?", "-map", "0:a:0?", "-map", "1:s:0", "-map", "1:s:1?"]);
             }
             _ => {
-                ret.arg("-i").arg(self.ipc_manager.get_video_socket_path());
-                ret.arg("-i").arg(self.ipc_manager.get_danmaku_socket_path());
-                ret.args(["-map", "0:v:0?", "-map", "0:a:0?", "-map", "1:s:0?"]);
+                ret.arg("-i").arg(self.ctx.im.get_video_socket_path());
+                ret.arg("-i").arg(self.ctx.im.get_danmaku_socket_path());
+                ret.args(["-map", "0:v:0?", "-map", "0:a:0?", "-map", "1:s:0", "-map", "1:s:1?"]);
             }
         }
         ret.args(&["-c:v", "copy"]);
         ret.args(&["-c:a", "copy"]);
-        ret.args(&["-c:s", "ass"]);
+        ret.args(&["-c:s", "copy"]);
         ret.args(&[
             "-metadata",
-            format!("title={}", self.cm.title.borrow()).as_str(),
+            format!("title={}", self.ctx.cm.title.borrow()).as_str(),
+            // "-max_interleave_delta",
+            // "500000",
             "-f",
             "matroska",
         ]);
-        match self.cm.run_mode {
+        match self.ctx.cm.run_mode {
             RunMode::Play => {
-                ret.arg("-listen").arg("1").arg(self.ipc_manager.get_f2m_socket_path());
+                ret.arg("-listen").arg("1").arg(self.ctx.im.get_f2m_socket_path());
             }
             RunMode::Record => {
-                match self.cm.http_address.as_ref() {
+                match self.ctx.cm.http_address.as_ref() {
                     Some(it) => {
                         ret.arg("-listen").arg("1").arg(it);
                     }
                     None => {
-                        ret.arg("-listen").arg("1").arg(self.ipc_manager.get_f2m_socket_path());
+                        ret.arg("-listen").arg("1").arg(self.ctx.im.get_f2m_socket_path());
                     }
                 };
             }
@@ -206,7 +205,7 @@ impl FfmpegControl {
                 // continue;
             } else if let Some(_it) = dm_re.captures(&line) {
                 if ffready_sent == false {
-                    let _ = self.mtx.send(DMLMessage::FfmpegOutputReady).await;
+                    let _ = self.ctx.mtx.send(DMLMessage::FfmpegOutputReady).await;
                     ffready_sent = true;
                 }
             } else if let Some(it) = res_re.captures(&line) {
@@ -216,7 +215,7 @@ impl FfmpegControl {
                     let _ = self.quit().await;
                 }
                 if vinfo_sent == false {
-                    let _ = self.mtx.send(DMLMessage::SetVideoInfo((w, h, 0))).await;
+                    let _ = self.ctx.mtx.send(DMLMessage::SetVideoInfo((w, h, 0))).await;
                     vinfo_sent = true;
                 }
             }
@@ -236,7 +235,7 @@ impl FfmpegControl {
             .unwrap();
         let ffstderr = ff.stderr.take().unwrap();
         let ff_task = async {
-            if self.cm.stream_type.get() == StreamType::HLS(0) {
+            if self.ctx.cm.stream_type.get() == StreamType::HLS(0) {
                 let mut preff = self
                     .create_pre_ff_command()?
                     .stdin(std::process::Stdio::piped())

@@ -1,13 +1,50 @@
 pub mod config;
 
-use self::config::{BVideoInfo, BVideoType, Config};
 use crate::utils::is_android;
-use crate::Args;
+use clap::Parser;
+use config::{BVideoInfo, BVideoType, Config};
 use reqwest::Url;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::Path;
 use tokio::{fs::OpenOptions, io::AsyncWriteExt};
+
+#[derive(Parser)]
+#[clap(author, version, about, long_about = None)]
+pub struct Args {
+    /// Set the http url
+    #[clap(short = 'u', long, value_parser, value_name = "URL")]
+    url: String,
+
+    #[clap(short = 'r', long, action)]
+    record: bool,
+
+    #[clap(long = "download-dm", action)]
+    download_dm: bool,
+
+    #[clap(short = 'w', long = "wait-interval", value_parser)]
+    wait_interval: Option<u64>,
+
+    #[clap(long = "log-level", default_value_t = 3, value_parser)]
+    pub log_level: u8,
+
+    /// Serve as a http server
+    #[clap(long = "http-address", value_parser)]
+    http_address: Option<String>,
+
+    /// Do not print danmaku
+    #[clap(short = 'q', long, action)]
+    quiet: bool,
+
+    #[clap(long, action)]
+    tcp: bool,
+
+    #[clap(long, action)]
+    plive: bool,
+    // /// Use the Cookies that extracted from browser, could be "chrome" "chromium" or "firefox"
+    // #[clap(long = "cookies-from-browser", value_parser)]
+    // cookies_from_browser: Option<String>,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Platform {

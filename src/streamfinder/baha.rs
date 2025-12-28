@@ -1,5 +1,5 @@
-use crate::config::ConfigManager;
 use crate::dmlerr;
+use crate::dmlive::DMLContext;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -8,17 +8,17 @@ use url::Url;
 const BAHA_API1: &'static str = "https://api.gamer.com.tw/anime/v1/video.php";
 
 pub struct Baha {
-    cm: Rc<ConfigManager>,
+    ctx: Rc<DMLContext>,
 }
 
 impl Baha {
-    pub fn new(cm: Rc<ConfigManager>) -> Self {
-        Baha { cm }
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
+        Baha { ctx }
     }
 
     pub async fn get_video(&self) -> Result<HashMap<&'static str, String>> {
         let mut sn = "".to_string();
-        let u = Url::parse(&self.cm.room_url).unwrap();
+        let u = Url::parse(&self.ctx.cm.room_url).unwrap();
         for q in u.query_pairs() {
             if q.0.eq("sn") {
                 sn = q.1.parse().unwrap();
@@ -33,7 +33,7 @@ impl Baha {
         let j = client.get(format!("{}", BAHA_API1)).query(&params1).send().await?.json::<serde_json::Value>().await?;
         let title = j.pointer("/data/anime/title").ok_or_else(|| dmlerr!())?.as_str().unwrap();
         let episodes = j.pointer("/data/anime/episodes/0").ok_or_else(|| dmlerr!())?.as_array().unwrap();
-        let mut page = self.cm.bvideo_info.borrow().current_page;
+        let mut page = self.ctx.cm.bvideo_info.borrow().current_page;
         if page == 0 {
             page = 1;
         }

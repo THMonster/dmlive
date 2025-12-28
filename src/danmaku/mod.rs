@@ -8,10 +8,8 @@ mod mkv_header;
 mod twitch;
 mod youtube;
 
-use crate::ipcmanager::IPCManager;
-use crate::{config::ConfigManager, dmlive::DMLMessage};
+use crate::dmlive::DMLContext;
 use anyhow::Result;
-use async_channel::Sender;
 use chrono::{Duration, NaiveTime};
 use log::info;
 use std::cell::Cell;
@@ -57,8 +55,7 @@ pub struct DMLDanmaku {
 }
 
 pub struct Danmaku {
-    ipc_manager: Rc<IPCManager>,
-    cm: Rc<ConfigManager>,
+    ctx: Rc<DMLContext>,
     show_nick: Cell<bool>,
     font_size: Cell<usize>,
     channel_num: Cell<usize>,
@@ -70,8 +67,8 @@ pub struct Danmaku {
 }
 
 impl Danmaku {
-    pub fn new(cm: Rc<ConfigManager>, im: Rc<IPCManager>, _mtx: Sender<DMLMessage>) -> Self {
-        let font_size = (40.0 * cm.font_scale.get()) as usize;
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
+        let font_size = (40.0 * ctx.cm.font_scale.get()) as usize;
         let ch = vec![
             DanmakuChannel {
                 length: 0,
@@ -80,8 +77,7 @@ impl Danmaku {
             30
         ];
         Self {
-            ipc_manager: im,
-            cm,
+            ctx,
             show_nick: Cell::new(false),
             font_size: Cell::new(font_size),
             channel_num: Cell::new((540.0 / font_size as f64).ceil() as usize),
@@ -103,8 +99,8 @@ impl Danmaku {
 
     pub async fn set_speed(&self, speed: u64) {
         if (1000..30000).contains(&speed) {
-            self.cm.danmaku_speed.set(speed);
-            let _ = self.cm.write_config().await;
+            self.ctx.cm.danmaku_speed.set(speed);
+            let _ = self.ctx.cm.write_config().await;
         }
     }
 
@@ -112,15 +108,15 @@ impl Danmaku {
         if font_scale > 0.0 {
             self.font_size.set((40.0 * font_scale) as usize);
             self.channel_num.set((540.0 / self.font_size.get() as f64).ceil() as usize);
-            self.cm.font_scale.set(font_scale);
-            let _ = self.cm.write_config().await;
+            self.ctx.cm.font_scale.set(font_scale);
+            let _ = self.ctx.cm.write_config().await;
         }
     }
 
     pub async fn set_font_alpha(&self, font_alpha: f64) {
         if (0.0..=1.0).contains(&font_alpha) {
-            self.cm.font_alpha.set(font_alpha);
-            let _ = self.cm.write_config().await;
+            self.ctx.cm.font_alpha.set(font_alpha);
+            let _ = self.ctx.cm.write_config().await;
         }
     }
 
@@ -139,7 +135,7 @@ impl Danmaku {
     }
 
     fn get_avail_danmaku_channel(&self, c_pts: u64, len: usize) -> Option<usize> {
-        let s = (1920.0 + len as f64) / self.cm.danmaku_speed.get() as f64;
+        let s = (1920.0 + len as f64) / self.ctx.cm.danmaku_speed.get() as f64;
         for (i, c) in self.dchannels.borrow_mut().iter_mut().enumerate() {
             if i >= self.channel_num.get() {
                 break;
@@ -149,10 +145,10 @@ impl Danmaku {
                 c.begin_pts = c_pts;
                 return Some(i);
             }
-            if ((self.cm.danmaku_speed.get() as f64 - c_pts as f64 + c.begin_pts as f64) * s) > 1920.0 {
+            if ((self.ctx.cm.danmaku_speed.get() as f64 - c_pts as f64 + c.begin_pts as f64) * s) > 1920.0 {
                 continue;
             } else if ((c.length + 1920) as f64 * (c_pts as f64 - c.begin_pts as f64)
-                / self.cm.danmaku_speed.get() as f64)
+                / self.ctx.cm.danmaku_speed.get() as f64)
                 < c.length as f64
             {
                 continue;
@@ -190,7 +186,9 @@ impl Danmaku {
             .round() as usize
     }
 
-    fn launch_single_danmaku(&self, d: &DMLDanmaku, cluster: &RefCell<mkv_header::DMKVCluster>) -> Result<()> {
+    fn launch_single_danmaku(
+        &self, d: &DMLDanmaku, cluster: &RefCell<mkv_header::DMKVCluster>, track_number: u8,
+    ) -> Result<()> {
         let mut out_of_channel = false;
         let mut f1 = || {
             d.color.trim().is_empty().not().then(|| {})?;
@@ -207,7 +205,7 @@ impl Danmaku {
                 Some((avail_dc, display_length)) => {
                     let ass = format!(
                         r"{4},0,Default,{5},0,0,0,,{{\alpha{0}\fs{7}\1c&{6}&\move(1920,{1},{2},{1})}}{8}{9}{3}",
-                        format_args!("{:02x}", (self.cm.font_alpha.get() * 255_f64) as u8),
+                        format_args!("{:02x}", (self.ctx.cm.font_alpha.get() * 255_f64) as u8),
                         avail_dc * self.font_size.get(),
                         0 - display_length as isize,
                         &d.text,
@@ -219,15 +217,12 @@ impl Danmaku {
                         if self.show_nick.get() { ": " } else { "" },
                     )
                     .into_bytes();
-                    (ass, self.cm.danmaku_speed.get())
+                    (ass, self.ctx.cm.danmaku_speed.get())
+                    // (ass, 1000)
                 }
                 None => {
-                    let ass = format!(
-                        r"{},0,Default,dmlive-empty,0,0,0,,",
-                        self.read_order.get()
-                    )
-                    .into_bytes();
-                    (ass, 0)
+                    let ass = format!(r"{},0,Default,dmlive-empty,0,0,0,,", self.read_order.get()).into_bytes();
+                    (ass, if track_number == 1 { 0 } else { 200 })
                 }
             }
         } else {
@@ -235,7 +230,7 @@ impl Danmaku {
                 r"{0},0,Default,{1},0,0,0,,{{\alpha{2}\fs{3}\1c&{4}&\an{5}}}{6}{7}{8}",
                 self.read_order.get(),
                 &d.nick,
-                format_args!("{:02x}", (self.cm.font_alpha.get() * 255_f64) as u8),
+                format_args!("{:02x}", (self.ctx.cm.font_alpha.get() * 255_f64) as u8),
                 self.font_size.get(),
                 format_args!("{}{}{}", &d.color[4..6], &d.color[2..4], &d.color[0..2]),
                 d.position,
@@ -244,19 +239,18 @@ impl Danmaku {
                 &d.text,
             )
             .into_bytes();
-            (ass, self.cm.danmaku_speed.get())
+            (ass, self.ctx.cm.danmaku_speed.get())
         };
         self.read_order.update(|x| x + 1);
-        let _ = cluster.borrow_mut().add_ass_block(d.time as u64, ass, du);
+        let _ = cluster.borrow_mut().add_ass_block(d.time as u64, ass, du, track_number);
         // out_of_channel.not().then(|| {}).ok_or_else(|| anyhow!("channels unavailable"))
         Ok(())
     }
 
-    #[allow(unreachable_code)]
     async fn launch_live_danmaku_task(&self, rx: async_channel::Receiver<DMLDanmaku>) -> Result<()> {
         let now = std::time::Instant::now();
         let padding_time = Cell::new(0);
-        let mut socket = self.ipc_manager.get_danmaku_socket().await?;
+        let mut socket = self.ctx.im.get_danmaku_socket().await?;
         let mut empty_dm = DMLDanmaku {
             text: "".to_string(),
             nick: "".to_string(),
@@ -265,17 +259,17 @@ impl Danmaku {
             position: 0,
         };
         let mkv_cluster = RefCell::new(mkv_header::DMKVCluster::new());
-        socket.write_all(mkv_header::MKV_HEADER).await?;
+        socket.write_all(mkv_header::MKV_HEADER_NEW).await?;
         let t1 = async {
             while let Ok(mut dml_dm) = rx.recv().await {
-                if !self.cm.quiet {
+                if !self.ctx.cm.quiet {
                     println!("[{}] {}", &dml_dm.nick, &dml_dm.text);
                 }
                 if !self.fk.dm_check(&dml_dm.text) {
                     continue;
                 }
                 dml_dm.time = now.elapsed().as_millis() as i64 + padding_time.get();
-                self.launch_single_danmaku(&dml_dm, &mkv_cluster)?;
+                self.launch_single_danmaku(&dml_dm, &mkv_cluster, 1)?;
             }
             anyhow::Ok(())
         };
@@ -283,20 +277,23 @@ impl Danmaku {
         let t2 = async {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(1000));
             mkv_cluster.borrow_mut().reset(0);
-            for _ in 0..2000 {
+            for _ in 0..100 {
                 empty_dm.time = padding_time.get();
-                padding_time.update(|x| x + 1);
-                self.launch_single_danmaku(&empty_dm, &mkv_cluster)?;
+                padding_time.update(|x| x + 30);
+                self.launch_single_danmaku(&empty_dm, &mkv_cluster, 1)?;
+                self.launch_single_danmaku(&empty_dm, &mkv_cluster, 2)?;
             }
             loop {
                 interval.tick().await;
-                let data = mkv_cluster.borrow().write_to_bytes();
                 let now_ts = now.elapsed().as_millis() as i64 + padding_time.get();
-                mkv_cluster.borrow_mut().reset(now_ts as u64);
                 empty_dm.time = now_ts;
-                self.launch_single_danmaku(&empty_dm, &mkv_cluster)?;
+                self.launch_single_danmaku(&empty_dm, &mkv_cluster, 1)?;
+                self.launch_single_danmaku(&empty_dm, &mkv_cluster, 2)?;
+                let data = mkv_cluster.borrow().write_to_bytes();
+                mkv_cluster.borrow_mut().reset(now_ts as u64);
                 socket.write_all(&data).await?;
             }
+            #[allow(unreachable_code)]
             anyhow::Ok(())
         };
         tokio::select! {
@@ -307,7 +304,7 @@ impl Danmaku {
     }
 
     async fn launch_video_danmaku_task(&self, rx: async_channel::Receiver<DMLDanmaku>) -> Result<()> {
-        let mut socket = self.ipc_manager.get_danmaku_socket().await?;
+        let mut socket = self.ctx.im.get_danmaku_socket().await?;
         let mut dm_map: BTreeMap<i64, DMLDanmaku> = BTreeMap::new();
         while let Ok(d) = rx.recv().await {
             dm_map.insert(d.time, d);
@@ -316,7 +313,7 @@ impl Danmaku {
         for (k, v) in dm_map.into_iter() {
             info!("{}-{}-{}-{}", k, &v.text, v.position, &v.color);
             let t1 = NaiveTime::from_hms_opt(0, 0, 0).unwrap() + Duration::milliseconds(k);
-            let t2 = t1 + Duration::milliseconds(self.cm.danmaku_speed.get() as i64);
+            let t2 = t1 + Duration::milliseconds(self.ctx.cm.danmaku_speed.get() as i64);
             let mut t1_s = t1.format("%k:%M:%S%.3f").to_string();
             let mut t2_s = t2.format("%k:%M:%S%.3f").to_string();
             t1_s.remove(t1_s.len() - 1);
@@ -331,7 +328,7 @@ impl Danmaku {
                 };
                 let ass = format!(
                     r#"Dialogue: 0,{4},{5},Default,,0,0,0,,{{\alpha{0}\fs{7}\1c&{6}&\move(1920,{1},{2},{1})}}{3}"#,
-                    format_args!("{:02x}", (self.cm.font_alpha.get() * 255_f64) as u8),
+                    format_args!("{:02x}", (self.ctx.cm.font_alpha.get() * 255_f64) as u8),
                     avail_dc * self.font_size.get(),
                     0 - display_length as isize,
                     v.text,
@@ -345,7 +342,7 @@ impl Danmaku {
             } else {
                 let ass = format!(
                     r#"Dialogue: 0,{4},{5},Default,,0,0,0,,{{\alpha{0}\fs{3}\1c&{2}&\an{6}}}{1}"#,
-                    format_args!("{:02x}", (self.cm.font_alpha.get() * 255_f64) as u8),
+                    format_args!("{:02x}", (self.ctx.cm.font_alpha.get() * 255_f64) as u8),
                     v.text,
                     format_args!("{}{}{}", &v.color[4..6], &v.color[2..4], &v.color[0..2]),
                     self.font_size.get(),
@@ -362,10 +359,10 @@ impl Danmaku {
 
     pub async fn danmaku_client_task(&self, dtx: async_channel::Sender<DMLDanmaku>) -> Result<()> {
         loop {
-            match match self.cm.site {
+            match match self.ctx.cm.site {
                 crate::config::Site::BiliLive => {
                     let b = bilibili::Bilibili::new();
-                    b.run(&self.cm.room_url, dtx.clone()).await
+                    b.run(&self.ctx.cm.room_url, dtx.clone()).await
                 }
                 crate::config::Site::BiliVideo => {
                     let b = bilivideo::Bilibili::new();
@@ -385,19 +382,19 @@ impl Danmaku {
                 }
                 crate::config::Site::DouyuLive => {
                     let b = douyu::Douyu::new();
-                    b.run(&self.cm.room_url, dtx.clone()).await
+                    b.run(&self.ctx.cm.room_url, dtx.clone()).await
                 }
                 crate::config::Site::HuyaLive => {
                     let b = huya::Huya::new();
-                    b.run(&self.cm.room_url, dtx.clone()).await
+                    b.run(&self.ctx.cm.room_url, dtx.clone()).await
                 }
                 crate::config::Site::TwitchLive => {
                     let b = twitch::Twitch::new();
-                    b.run(&self.cm.room_url, dtx.clone()).await
+                    b.run(&self.ctx.cm.room_url, dtx.clone()).await
                 }
                 crate::config::Site::YoutubeLive => {
                     let b = youtube::Youtube::new();
-                    b.run(&self.cm.room_url, dtx.clone()).await
+                    b.run(&self.ctx.cm.room_url, dtx.clone()).await
                 }
             } {
                 Ok(_) => {}

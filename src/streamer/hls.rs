@@ -1,5 +1,8 @@
 use super::segment::MediaSegment;
-use crate::{config::ConfigManager, dmlive::DMLMessage, ipcmanager::IPCManager, streamer::segment::SegmentStream};
+use crate::{
+    dmlive::{DMLContext, DMLMessage},
+    streamer::segment::SegmentStream,
+};
 use log::info;
 use reqwest::Client;
 use std::{
@@ -24,26 +27,19 @@ pub struct M3U8 {
 pub struct HLS {
     url: RefCell<String>,
     header_done: Cell<bool>,
-    ipc_manager: Rc<IPCManager>,
-    cm: Rc<ConfigManager>,
-    mtx: async_channel::Sender<DMLMessage>,
     watch_dog: Cell<bool>,
     stream_ready: Cell<bool>,
+    ctx: Rc<DMLContext>,
 }
 
 impl HLS {
-    pub fn new(
-        stream_info: &HashMap<&str, String>, cm: Rc<ConfigManager>, im: Rc<IPCManager>,
-        mtx: async_channel::Sender<DMLMessage>,
-    ) -> Self {
+    pub fn new(stream_info: &HashMap<&str, String>, ctx: Rc<DMLContext>) -> Self {
         HLS {
             url: RefCell::new(stream_info["url"].to_string()),
-            ipc_manager: im,
-            cm,
-            mtx,
             watch_dog: Cell::new(false),
             header_done: Cell::new(false),
             stream_ready: Cell::new(false),
+            ctx,
         }
     }
 
@@ -150,7 +146,7 @@ impl HLS {
     }
 
     async fn download_task(&self, client: &Client, ss: &SegmentStream) -> anyhow::Result<()> {
-        let mut stream = self.ipc_manager.get_video_socket().await?;
+        let mut stream = self.ctx.im.get_video_socket().await?;
         let mut rx = ss.clip_rx.borrow_mut();
         while let Some(mut clip) = rx.recv().await {
             // info!("hls: clip: {}", &clip);
@@ -166,7 +162,7 @@ impl HLS {
                 if clip.skip == 0 {
                     if !self.stream_ready.get() {
                         self.stream_ready.set(true);
-                        let _ = self.mtx.send(DMLMessage::StreamReady).await;
+                        let _ = self.ctx.mtx.send(DMLMessage::StreamReady).await;
                     }
                     stream.write_all(&chunk).await?;
                 }
@@ -212,7 +208,7 @@ impl HLS {
 
     async fn watch_dog_task(&self) -> anyhow::Result<()> {
         let mut cnt = 0;
-        let max_waiting = match self.cm.site {
+        let max_waiting = match self.ctx.cm.site {
             crate::config::Site::TwitchLive => 30,
             _ => 10,
         };

@@ -1,8 +1,7 @@
 use crate::{
-    config::ConfigManager,
     dmlerr,
-    dmlive::DMLMessage,
-    ipcmanager::{DMLStream, IPCManager},
+    dmlive::{DMLContext, DMLMessage},
+    ipcmanager::DMLStream,
     streamer::segment::{MediaSegment, SegmentStream},
     streamfinder,
 };
@@ -30,27 +29,20 @@ pub struct Youtube {
     url_a: RefCell<String>,
     sq: Cell<u64>,
     itvl: Cell<u64>,
-    ipc_manager: Rc<IPCManager>,
-    cm: Rc<ConfigManager>,
-    mtx: async_channel::Sender<DMLMessage>,
     stream_ready: Cell<bool>,
+    ctx: Rc<DMLContext>,
 }
 
 impl Youtube {
-    pub fn new(
-        stream_info: &HashMap<&str, String>, cm: Rc<ConfigManager>, im: Rc<IPCManager>,
-        mtx: async_channel::Sender<DMLMessage>,
-    ) -> Self {
+    pub fn new(stream_info: &HashMap<&str, String>, ctx: Rc<DMLContext>) -> Self {
         Youtube {
             url_v: RefCell::new(stream_info["url_v"].to_string()),
             url_a: RefCell::new(stream_info["url_a"].to_string()),
             sq: Cell::new(stream_info["sq"].parse().unwrap_or(1)),
             itvl: Cell::new(1000),
-            ipc_manager: im,
-            cm,
-            mtx,
             stream_ready: Cell::new(false),
             room_url: stream_info["room_url"].to_string(),
+            ctx,
         }
     }
 
@@ -134,7 +126,7 @@ impl Youtube {
             if seg.skip == 0 {
                 if !self.stream_ready.get() {
                     self.stream_ready.set(true);
-                    let _ = self.mtx.send(DMLMessage::StreamReady).await;
+                    let _ = self.ctx.mtx.send(DMLMessage::StreamReady).await;
                 }
                 stream.write_all(&chunk).await?;
             }
@@ -146,10 +138,10 @@ impl Youtube {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(20000));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
-        let sf = streamfinder::youtube::Youtube::new();
         loop {
             interval.tick().await;
-            let mut info = sf.get_live_info(client, self.room_url.as_str()).await?;
+            let info = streamfinder::youtube::Youtube::get_live_info(client, self.room_url.as_str()).await?;
+            let mut info = streamfinder::youtube::Youtube::decode_mpd(client, &info.5).await?;
             *self.url_v.borrow_mut() = info.remove("url_v").unwrap();
             *self.url_a.borrow_mut() = info.remove("url_a").unwrap();
         }
@@ -188,7 +180,7 @@ impl Youtube {
     }
 
     pub async fn video_task(&self, client: &Client, mut rx: Receiver<MediaSegment>) -> anyhow::Result<()> {
-        let mut video_stream = self.ipc_manager.get_video_socket().await?;
+        let mut video_stream = self.ctx.im.get_video_socket().await?;
         while let Some(clip) = rx.recv().await {
             self.download_video(&client, &mut video_stream, &clip).await?;
         }
@@ -196,7 +188,7 @@ impl Youtube {
     }
 
     pub async fn audio_task(&self, client: &Client, mut rx: Receiver<MediaSegment>) -> anyhow::Result<()> {
-        let mut audio_stream = self.ipc_manager.get_audio_socket().await?;
+        let mut audio_stream = self.ctx.im.get_audio_socket().await?;
         while let Some(clip) = rx.recv().await {
             self.download_audio(&client, &mut audio_stream, &clip).await?;
         }

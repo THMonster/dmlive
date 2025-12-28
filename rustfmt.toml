@@ -1,4 +1,4 @@
-edition = "2021"
+edition = "2024"
 indent_style = "Visual"
 empty_item_single_line = false
 fn_params_layout = "Compressed"

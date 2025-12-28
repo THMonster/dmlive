@@ -45,6 +45,8 @@ pub const MKV_HEADER: &'static [u8] = &[
     0x69, 0x6E, 0x56, 0x2C, 0x20, 0x45, 0x66, 0x66, 0x65, 0x63, 0x74, 0x2C, 0x20, 0x54, 0x65, 0x78, 0x74, 0x0A,
 ];
 
+pub const MKV_HEADER_NEW: &'static [u8] = include_bytes!("header.mkv");
+
 #[derive(Debug)]
 pub struct MKVBlockGroup {
     block_group_id: u8, // 0xa0
@@ -106,14 +108,15 @@ impl DMKVCluster {
         self.cluster_size = 10 as u64 | 0x0100_0000_0000_0000;
     }
 
-    pub fn add_ass_block(&mut self, ts: u64, ass: Vec<u8>, speed: u64) -> Result<()> {
+    pub fn add_ass_block(&mut self, ts: u64, ass: Vec<u8>, speed: u64, track_number: u8) -> Result<()> {
         let ass_len = ass.len();
         let b = MKVBlockGroup {
             block_group_id: 0xa0,
             block_group_size: (ass_len + 15) as u32 | 0x1000_0000u32,
             block_id: 0xa1,
             block_size: (ass_len + 4) as u32 | 0x1000_0000u32,
-            block_track_number: 0x81,
+            // block_track_number: 0x81,
+            block_track_number: 0x80 | track_number,
             block_relative_time: ts.saturating_sub(self.timestamp) as u16,
             block_header_flags: 0x00,
             block_content: ass,

@@ -1,55 +1,18 @@
-mod config;
-mod danmaku;
-mod dmlive;
-mod ffmpeg;
-mod ipcmanager;
-mod mpv;
-mod streamer;
-mod streamfinder;
-mod utils;
+// mod config;
+// mod danmaku;
+// mod dmlive;
+// mod ffmpeg;
+// mod ipcmanager;
+// mod mpv;
+// mod streamer;
+// mod streamfinder;
+// mod utils;
 
-use crate::config::ConfigManager;
 use clap::Parser;
+use dmlive::config::{Args, ConfigManager};
 use log::*;
 use std::rc::Rc;
 use tokio::runtime::Builder;
-
-#[derive(Parser)]
-#[clap(author, version, about, long_about = None)]
-pub struct Args {
-    /// Set the http url
-    #[clap(short = 'u', long, value_parser, value_name = "URL")]
-    url: String,
-
-    #[clap(short = 'r', long, action)]
-    record: bool,
-
-    #[clap(long = "download-dm", action)]
-    download_dm: bool,
-
-    #[clap(short = 'w', long = "wait-interval", value_parser)]
-    wait_interval: Option<u64>,
-
-    #[clap(long = "log-level", default_value_t = 3, value_parser)]
-    log_level: u8,
-
-    /// Serve as a http server
-    #[clap(long = "http-address", value_parser)]
-    http_address: Option<String>,
-
-    /// Do not print danmaku
-    #[clap(short = 'q', long, action)]
-    quiet: bool,
-
-    #[clap(long, action)]
-    tcp: bool,
-
-    #[clap(long, action)]
-    plive: bool,
-    // /// Use the Cookies that extracted from browser, could be "chrome" "chromium" or "firefox"
-    // #[clap(long = "cookies-from-browser", value_parser)]
-    // cookies_from_browser: Option<String>,
-}
 
 fn main() {
     let args = Args::parse();
@@ -74,10 +37,12 @@ fn main() {
         let mut cm = ConfigManager::new(config_path, &args);
         cm.init().await.unwrap();
         let cm = Rc::new(cm);
-        let mut im = ipcmanager::IPCManager::new(cm.clone());
+        let mut im = dmlive::ipcmanager::IPCManager::new(cm.clone());
         im.run().await.unwrap();
         let im = Rc::new(im);
-        let dml = dmlive::DMLive::new(cm, im).await;
+        let (mtx, mrx) = async_channel::unbounded();
+        let ctx = dmlive::dmlive::DMLContext { im, cm, mrx, mtx };
+        let dml = dmlive::dmlive::DMLive::new(Rc::new(ctx)).await;
         dml.run().await;
     })
 }

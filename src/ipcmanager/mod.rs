@@ -22,6 +22,7 @@ pub struct IPCManager {
     danmaku_tcp_listener: Option<TcpListener>,
     video_tcp_listener: Option<TcpListener>,
     audio_tcp_listener: Option<TcpListener>,
+    // cm: Rc<ConfigManager>,
     cm: Rc<ConfigManager>,
 }
 

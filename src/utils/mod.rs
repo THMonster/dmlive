@@ -1,11 +1,8 @@
-pub mod cookies;
 pub mod bili_wbi;
+pub mod cookies;
+pub mod jsruntime;
 
-use log::info;
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt},
-    process::Command,
-};
+use tokio::process::Command;
 
 #[macro_export]
 macro_rules! dmlerr {
@@ -28,7 +25,7 @@ pub fn gen_ua() -> String {
     //     "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{}.0.{}.{} Safari/537.36",
     //     n1, n2, n3
     // );
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0".into()
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:146.0) Gecko/20100101 Firefox/146.0".into()
     // "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.45 Safari/537.36".into()
     // "Mozilla/5.0 (X11; Linux x86_64; rv:94.0) Gecko/20100101 Firefox/94.0".into()
     // "Mozilla/5.0 (Android 10; Mobile; rv:94.0) Gecko/94.0 Firefox/94.0".into()
@@ -39,62 +36,6 @@ pub fn gen_ua() -> String {
 pub fn gen_ua_safari() -> String {
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15".into()
 }
-
-// pub async fn js_call(js: &str, func: &str, args: &Vec<(u8, String)>) -> anyhow::Result<Vec<String>> {
-pub async fn js_call(js: &str) -> anyhow::Result<Vec<String>> {
-    let mut rt = Command::new("node")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
-    let mut rtin = rt.stdin.take().unwrap();
-    let rtout = rt.stdout.take().unwrap();
-    let mut reader = tokio::io::BufReader::new(rtout).lines();
-    let js = js.to_string();
-    tokio::task::spawn(async move {
-        rtin.write_all(js.as_bytes()).await.unwrap();
-        rtin.shutdown().await.unwrap();
-    });
-
-    // let js_task = async {
-    //     rtin.write_all(js.as_bytes()).await?;
-    //     // rtin.flush().await?;
-    //     rtin.shutdown().await.unwrap();
-    //     rt.wait().await?;
-    //     anyhow::Ok(())
-    // };
-    let mut ret = Vec::new();
-    let out_task = async {
-        while let Some(line) = reader.next_line().await.unwrap() {
-            ret.push(line);
-            break;
-        }
-    };
-    tokio::select! {
-        // _ = js_task => {},
-        _ = out_task => {},
-    }
-    info!("{:?}", &ret);
-    Ok(ret)
-}
-
-// pub async fn js_call_boa(js: &str) -> anyhow::Result<Vec<String>> {
-//     warn!("{}", &js);
-//     let mut f = tokio::fs::OpenOptions::new().write(true).truncate(true).open("/tmp/ttt.js").await?;
-//     f.write_all(js.as_bytes()).await?;
-//     f.sync_all().await?;
-//     let mut context = boa_engine::Context::default();
-//     let ret = match context.eval(js) {
-//         Ok(res) => res.to_string(&mut context).unwrap(),
-//         Err(e) => {
-//             warn!("js error: {}", e.display());
-//             "".into()
-//         }
-//     };
-//     warn!("{:?}", &ret);
-//     todo!()
-//     // Ok(Vec::new())
-// }
 
 pub fn vn(mut val: u64) -> Vec<u8> {
     let mut buf = b"".to_vec();

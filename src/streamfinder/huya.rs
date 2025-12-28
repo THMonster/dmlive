@@ -1,4 +1,4 @@
-use base64::{engine::general_purpose, Engine};
+use base64::{Engine, engine::general_purpose};
 use regex::Regex;
 use std::{collections::HashMap, str};
 use url::form_urlencoded;
@@ -12,11 +12,11 @@ impl Huya {
         Self {}
     }
 
-    pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<&'static str, String>> {
-        let client = reqwest::Client::new();
-        let mut ret = HashMap::new();
+    pub async fn get_live_info(
+        client: &reqwest::Client, url: &str,
+    ) -> anyhow::Result<(String, String, String, bool, String)> {
         let resp = client
-            .get(room_url)
+            .get(url)
             .header("User-Agent", crate::utils::gen_ua())
             .header("Referer", "https://www.huya.com/")
             .send()
@@ -26,38 +26,57 @@ impl Huya {
         let re = Regex::new(r#"(?m)(?s)hyPlayerConfig.*?stream:(.*?)\s*};"#).unwrap();
         let re1 = Regex::new(r"var\s+TT_PROFILE_INFO\s+=\s+(.+\});").unwrap();
         let re2 = Regex::new(r"var\s+TT_ROOM_DATA\s+=\s+(.+\});").unwrap();
-        let j: serde_json::Value = serde_json::from_str(&re.captures(&resp).ok_or_else(|| dmlerr!())?[1])?;
-        let j1: serde_json::Value = serde_json::from_str(&re1.captures(&resp).ok_or_else(|| dmlerr!())?[1])?;
-        let j2: serde_json::Value = serde_json::from_str(&re2.captures(&resp).ok_or_else(|| dmlerr!())?[1])?;
-        // println!("{:?}", &j);
-        ret.insert(
-            "title",
-            format!(
-                "{} - {}",
-                j2.pointer("/introduction").ok_or_else(|| dmlerr!())?.as_str().unwrap(),
-                j1.pointer("/nick").ok_or_else(|| dmlerr!())?.as_str().unwrap()
-            ),
-        );
-        let flv_anti_code =
-            j.pointer("/data/0/gameStreamInfoList/0/sFlvAntiCode").ok_or_else(|| dmlerr!())?.as_str().unwrap();
-        let stream_name =
-            j.pointer("/data/0/gameStreamInfoList/0/sStreamName").ok_or_else(|| dmlerr!())?.as_str().unwrap();
-        let p = Self::gen_params(flv_anti_code, stream_name);
-        ret.insert(
-            "url",
-            html_escape::decode_html_entities(
-                format!(
-                    "{}/{}.{}?{}",
-                    j.pointer("/data/0/gameStreamInfoList/0/sFlvUrl").ok_or_else(|| dmlerr!())?.as_str().unwrap(),
-                    stream_name,
-                    j.pointer("/data/0/gameStreamInfoList/0/sFlvUrlSuffix").ok_or_else(|| dmlerr!())?.as_str().unwrap(),
-                    p,
-                )
-                .as_str(),
-            )
-            .to_string(),
-        );
+        let j: serde_json::Value =
+            serde_json::from_str(re.captures(&resp).and_then(|x| x.get(1)).ok_or_else(|| dmlerr!())?.as_str())?;
+        let j1: serde_json::Value =
+            serde_json::from_str(re1.captures(&resp).and_then(|x| x.get(1)).ok_or_else(|| dmlerr!())?.as_str())?;
+        let j2: serde_json::Value =
+            serde_json::from_str(re2.captures(&resp).and_then(|x| x.get(1)).ok_or_else(|| dmlerr!())?.as_str())?;
+        let title = j2.pointer("/introduction").and_then(|x| x.as_str()).unwrap_or("没有直播标题");
+        let nick = j1.pointer("/nick").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?;
+        let avatar = j1.pointer("/avatar").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?;
+        let cover = j2.pointer("/screenshot").and_then(|x| x.as_str()).unwrap_or(avatar);
+        let is_living = j2.pointer("/isOn").and_then(|x| x.as_bool()).ok_or_else(|| dmlerr!())?;
+        let cover = if cover.starts_with("//") {
+            format!("https:{}", cover)
+        } else {
+            cover.to_string()
+        };
 
+        let vurl = if is_living {
+            let flv_anti_code = j
+                .pointer("/data/0/gameStreamInfoList/0/sFlvAntiCode")
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| dmlerr!())?;
+            let stream_name = j
+                .pointer("/data/0/gameStreamInfoList/0/sStreamName")
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| dmlerr!())?;
+            let p = Self::gen_params(flv_anti_code, stream_name);
+            let vurl = format!(
+                "{}/{}.{}?{}",
+                j.pointer("/data/0/gameStreamInfoList/0/sFlvUrl").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?,
+                stream_name,
+                j.pointer("/data/0/gameStreamInfoList/0/sFlvUrlSuffix")
+                    .and_then(|x| x.as_str())
+                    .ok_or_else(|| dmlerr!())?,
+                p,
+            );
+            html_escape::decode_html_entities(vurl.as_str()).to_string()
+        } else {
+            "".to_string()
+        };
+
+        Ok((nick.to_string(), title.to_string(), cover, is_living, vurl))
+    }
+
+    pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<&'static str, String>> {
+        let client = reqwest::Client::new();
+        let mut ret = HashMap::new();
+        let room_info = Self::get_live_info(&client, room_url).await?;
+        room_info.3.then(|| 0).ok_or_else(|| dmlerr!())?;
+        ret.insert("title", format!("{} - {}", room_info.1, room_info.0));
+        ret.insert("url", room_info.4);
         Ok(ret)
     }
 

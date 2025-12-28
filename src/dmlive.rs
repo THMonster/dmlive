@@ -8,6 +8,13 @@ use log::info;
 use std::rc::Rc;
 use tokio::time::Duration;
 
+pub struct DMLContext {
+    pub im: Rc<IPCManager>,
+    pub cm: Rc<ConfigManager>,
+    pub mrx: Receiver<DMLMessage>,
+    pub mtx: Sender<DMLMessage>,
+}
+
 #[allow(unused)]
 pub enum DMLMessage {
     SetFontScale(f64),
@@ -24,35 +31,28 @@ pub enum DMLMessage {
 
 #[allow(unused)]
 pub struct DMLive {
-    ipc_manager: Rc<IPCManager>,
-    cm: Rc<ConfigManager>,
     mc: Rc<MpvControl>,
     fc: Rc<FfmpegControl>,
     sf: Rc<StreamFinder>,
     st: Rc<Streamer>,
     dm: Rc<Danmaku>,
-    mrx: Receiver<DMLMessage>,
-    mtx: Sender<DMLMessage>,
+    ctx: Rc<DMLContext>,
 }
 
 impl DMLive {
-    pub async fn new(cm: Rc<ConfigManager>, im: Rc<IPCManager>) -> Self {
-        let (mtx, mrx) = async_channel::unbounded();
-        let mc = Rc::new(MpvControl::new(cm.clone(), im.clone(), mtx.clone()));
-        let fc = Rc::new(FfmpegControl::new(cm.clone(), im.clone(), mtx.clone()));
-        let sf = Rc::new(StreamFinder::new(cm.clone(), im.clone(), mtx.clone()));
-        let st = Rc::new(Streamer::new(cm.clone(), im.clone(), mtx.clone()));
-        let dm = Rc::new(Danmaku::new(cm.clone(), im.clone(), mtx.clone()));
+    pub async fn new(ctx: Rc<DMLContext>) -> Self {
+        let mc = Rc::new(MpvControl::new(ctx.clone()));
+        let fc = Rc::new(FfmpegControl::new(ctx.clone()));
+        let sf = Rc::new(StreamFinder::new(ctx.clone()));
+        let st = Rc::new(Streamer::new(ctx.clone()));
+        let dm = Rc::new(Danmaku::new(ctx.clone()));
         DMLive {
-            ipc_manager: im,
-            cm,
-            mrx,
-            mtx,
             mc,
             fc,
             sf,
             st,
             dm,
+            ctx,
         }
     }
 
@@ -66,7 +66,7 @@ impl DMLive {
             _ = self.play() => {},
             _ = signal_task => {},
         }
-        match self.ipc_manager.stop().await {
+        match self.ctx.im.stop().await {
             Ok(_) => {}
             Err(err) => info!("ipc manager stop error: {}", err),
         };
@@ -78,7 +78,7 @@ impl DMLive {
         loop {
             tokio::select! {
                 Some(_) = tasks.next() => {},
-                msg = self.mrx.recv() => {
+                msg = self.ctx.mrx.recv() => {
                     match msg {
                         Ok(it) => { tasks.push(self.dispatch(it)) },
                         Err(_) => { return; },
@@ -111,7 +111,7 @@ impl DMLive {
             DMLMessage::SetVideoInfo((w, h, pts)) => {
                 info!("video info: w {} h {} pts {}", w, h, pts);
                 // danmaku task
-                if matches!(self.cm.site, crate::config::Site::BiliVideo) {
+                if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
                     let _ = self.dm.run_bilivideo(16.0 * h as f64 / w as f64 / 9.0).await;
                 } else {
                     self.dm.set_ratio_scale(16.0 * h as f64 / w as f64 / 9.0);
@@ -128,12 +128,12 @@ impl DMLive {
             DMLMessage::FfmpegOutputReady => {
                 info!("ffmpeg output ready");
                 tokio::time::sleep(Duration::from_millis(200)).await;
-                match self.cm.run_mode {
+                match self.ctx.cm.run_mode {
                     crate::config::RunMode::Play => {
                         let _ = self.mc.reload_video().await;
                     }
                     crate::config::RunMode::Record => {
-                        if self.cm.http_address.is_none() {
+                        if self.ctx.cm.http_address.is_none() {
                             let _ = self.fc.write_record_task().await;
                         }
                     }
@@ -144,19 +144,19 @@ impl DMLive {
 
     pub async fn play(&self) -> anyhow::Result<()> {
         loop {
-            match self.cm.run_mode {
+            match self.ctx.cm.run_mode {
                 crate::config::RunMode::Play => {
-                    if matches!(self.cm.site, crate::config::Site::BiliVideo) {
+                    if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
                         self.play_video().await?;
                         tokio::time::sleep(Duration::from_secs(u64::MAX)).await;
                     } else {
                         self.play_live().await?;
                     }
                 }
-                crate::config::RunMode::Record => match self.cm.record_mode {
+                crate::config::RunMode::Record => match self.ctx.cm.record_mode {
                     crate::config::RecordMode::All => {
                         self.play_live().await?;
-                        if matches!(self.cm.site, crate::config::Site::BiliVideo) {
+                        if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
                             return Err(anyhow::anyhow!("recording finished"));
                         }
                     }
@@ -173,8 +173,8 @@ impl DMLive {
 
     pub async fn play_live(&self) -> anyhow::Result<()> {
         let mut stream_info = self.sf.run().await?;
-        self.cm.set_stream_type(&stream_info);
-        *self.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
+        self.ctx.cm.set_stream_type(&stream_info);
+        *self.ctx.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
         self.dm.set_bili_video_cid(stream_info.get("bili_cid").unwrap_or(&"".to_string())).await;
         let ff_task = async {
             self.fc.run(&stream_info).await?;
@@ -185,7 +185,7 @@ impl DMLive {
             self.fc.quit().await?;
             anyhow::Ok(())
         };
-        if matches!(self.cm.site, crate::config::Site::BiliVideo) {
+        if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
             ff_task.await?;
         } else {
             let (_ff_res, _st_res) = tokio::join!(ff_task, streamer_task);
@@ -195,8 +195,8 @@ impl DMLive {
 
     pub async fn play_video(&self) -> anyhow::Result<()> {
         let mut stream_info = self.sf.run().await?;
-        self.cm.set_stream_type(&stream_info);
-        *self.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
+        self.ctx.cm.set_stream_type(&stream_info);
+        *self.ctx.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
         self.dm.set_bili_video_cid(stream_info.get("bili_cid").unwrap_or(&"".to_string())).await;
         self.mc.reload_edl_video(&stream_info).await?;
         Ok(())
@@ -204,14 +204,14 @@ impl DMLive {
 
     pub async fn download_danmaku(&self) -> anyhow::Result<()> {
         let mut stream_info = self.sf.run().await?;
-        *self.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
+        *self.ctx.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
         self.dm.set_bili_video_cid(stream_info.get("bili_cid").unwrap_or(&"".to_string())).await;
         let ff_task = async {
             self.fc.write_danmaku_only_task().await?;
             anyhow::Ok(())
         };
         let danmaku_task = async {
-            match self.cm.site {
+            match self.ctx.cm.site {
                 crate::config::Site::BiliVideo => {
                     let _ = self.dm.run_bilivideo(1.0).await;
                 }
