@@ -259,7 +259,7 @@ impl Danmaku {
             position: 0,
         };
         let mkv_cluster = RefCell::new(mkv_header::DMKVCluster::new());
-        socket.write_all(mkv_header::MKV_HEADER_NEW).await?;
+        socket.write_all(mkv_header::MKV_HEADER).await?;
         let t1 = async {
             while let Ok(mut dml_dm) = rx.recv().await {
                 if !self.ctx.cm.quiet {
@@ -279,7 +279,7 @@ impl Danmaku {
             mkv_cluster.borrow_mut().reset(0);
             for _ in 0..100 {
                 empty_dm.time = padding_time.get();
-                padding_time.update(|x| x + 30);
+                padding_time.update(|x| x + 1);
                 self.launch_single_danmaku(&empty_dm, &mkv_cluster, 1)?;
                 self.launch_single_danmaku(&empty_dm, &mkv_cluster, 2)?;
             }

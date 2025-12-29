@@ -1,9 +1,10 @@
 // refer to https://github.com/SeaHOH/ykdl
 use chrono::prelude::*;
+use log::info;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::{dmlerr, utils::jsruntime::JSRuntime};
+use crate::dmlerr;
 
 const DOUYU_API1: &'static str = "https://www.douyu.com/betard/";
 const DOUYU_API2: &'static str = "https://www.douyu.com/swf_api/homeH5Enc?rids=";
@@ -57,25 +58,15 @@ impl Douyu {
         let did = Uuid::new_v4().as_simple().encode_lower(&mut Uuid::encode_buffer()).to_string();
         let tsec = format!("{}", Local::now().timestamp());
 
-        let rt = JSRuntime::new();
-        rt.run().await?;
-        let _ = rt
-            .eval(&format!(
-                r#"
-        const wrapper = new Function(
-          "globalThis",
-          `
-            var window = globalThis;
-            var self = globalThis;
-            var global = globalThis;
-            {crypto_js}
-            return globalThis.CryptoJS;
-          `
-        );
-        const CryptoJS = wrapper(globalThis);"#
-            ))
-            .await?;
-        let enc_data = rt.eval(&format!("{js_enc}\nub98484234('{rid}','{did}','{tsec}')")).await?;
+        let rt = rquickjs::Runtime::new()?;
+        let ctx = rquickjs::Context::full(&rt)?;
+        let enc_data = ctx.with(|ctx| -> rquickjs::Result<String> {
+            let _ = ctx.eval::<(), _>(crypto_js)?;
+            let _ = ctx.eval::<(), _>(js_enc)?;
+            let enc_data = ctx.eval::<String, _>(format!("ub98484234('{rid}','{did}','{tsec}')"))?;
+            Ok(enc_data)
+        })?;
+        info!("{enc_data}");
         let mut param1 = Vec::new();
         enc_data.split('&').for_each(|x| {
             x.split_once('=').map(|x| param1.push(x));
