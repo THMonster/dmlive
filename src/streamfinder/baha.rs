@@ -48,7 +48,7 @@ impl Baha {
         let len = title.len() - 3;
         ret.insert(
             "title",
-            format!("{}[{}]", title.get(0..len).ok_or_else(|| dmlerr!())?, page),
+            format!("{}[{page}]", title.get(0..len).ok_or_else(|| dmlerr!())?),
         );
         ret.insert("bili_cid", sn);
         // no video support

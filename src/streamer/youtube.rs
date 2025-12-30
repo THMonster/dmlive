@@ -140,7 +140,7 @@ impl Youtube {
         interval.tick().await;
         loop {
             interval.tick().await;
-            let info = streamfinder::youtube::Youtube::get_live_info(client, self.room_url.as_str()).await?;
+            let info = streamfinder::youtube::get_live_info(client, self.room_url.as_str()).await?;
             let mut info = streamfinder::youtube::Youtube::decode_mpd(client, &info.5).await?;
             *self.url_v.borrow_mut() = info.remove("url_v").unwrap();
             *self.url_a.borrow_mut() = info.remove("url_a").unwrap();

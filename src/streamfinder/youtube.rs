@@ -5,6 +5,58 @@ use std::collections::HashMap;
 
 use crate::{dmlerr, utils};
 
+pub async fn get_live_info(
+    client: &Client, room_url: &str,
+) -> anyhow::Result<(String, String, String, bool, String, String)> {
+    let resp = client
+        .get(room_url)
+        .header("Accept-Language", "en-US")
+        .header("Connection", "keep-alive")
+        .header("Referer", "https://www.youtube.com/")
+        .send()
+        .await?
+        .text()
+        .await?;
+
+    let re_cover = Regex::new(r#"link\s+rel="image_src"\s+href="([^"]+)""#).unwrap();
+    let re_owner = Regex::new(r#"meta\s+property="og:title"\s+content="([^"]+)""#).unwrap();
+    let avatar = re_cover.captures(&resp).and_then(|x| x.get(1)).map(|x| x.as_str());
+    let owner = re_owner.captures(&resp).and_then(|x| x.get(1)).map(|x| x.as_str());
+
+    let re = Regex::new(r"ytInitialPlayerResponse\s*=\s*(\{.+?\});.*?</script>").unwrap();
+    let j: Option<serde_json::Value> =
+        serde_json::from_str(re.captures(&resp).and_then(|x| x.get(1)).map_or("", |x| x.as_str())).ok();
+    let j = j.as_ref();
+    let owner = j.and_then(|x| x.pointer("/videoDetails/author")?.as_str()).or(owner).ok_or_else(|| dmlerr!())?;
+    let title = j.and_then(|x| x.pointer("/videoDetails/title")?.as_str()).unwrap_or("没有直播标题");
+    let cover = j
+        .and_then(|x| x.pointer("/videoDetails/thumbnail/thumbnails")?.as_array()?.last()?.pointer("/url")?.as_str())
+        .or(avatar)
+        .ok_or_else(|| dmlerr!())?;
+    let cid = j
+        .and_then(|x| {
+            x.pointer("/microformat/playerMicroformatRenderer/ownerProfileUrl")?
+                .as_str()?
+                .split('/')
+                .last()?
+                .strip_prefix("@")
+        })
+        .unwrap_or("");
+    let is_live = j.and_then(|x| x.pointer("/videoDetails/isLive")?.as_bool()).unwrap_or(false);
+
+    let mpd_url = j.and_then(|x| x.pointer("/streamingData/dashManifestUrl")?.as_str()).unwrap_or("");
+    // let hls_url = j.pointer("/streamingData/hlsManifestUrl").ok_or_else(|| dmlerr!())?.as_str().unwrap();
+
+    Ok((
+        owner.to_string(),
+        title.to_string(),
+        cover.to_string(),
+        is_live,
+        cid.to_string(),
+        mpd_url.to_string(),
+    ))
+}
+
 pub struct Youtube {}
 
 impl Youtube {
@@ -14,7 +66,7 @@ impl Youtube {
 
     #[allow(dead_code)]
     pub async fn decode_mpd(client: &Client, url: &str) -> anyhow::Result<HashMap<&'static str, String>> {
-        info!("{}", url);
+        info!("{url}");
         let mut ret = HashMap::new();
         let mut video_base_url = Vec::new();
         let mut audio_base_url = None;
@@ -40,7 +92,7 @@ impl Youtube {
             let mut url = None;
             for st in elem_v.descendants() {
                 if st.has_attribute("bandwidth") {
-                    debug!("{:?}", &st);
+                    debug!("{st:?}");
                     for e in st.descendants() {
                         if e.tag_name().name().eq("BaseURL") {
                             url = e.text();
@@ -99,7 +151,7 @@ impl Youtube {
             .await?;
         let mut m3u8_url = "";
         for l in resp.lines() {
-            info!("{}", l);
+            info!("{l}");
             if l.contains(".m3u8") {
                 m3u8_url = l;
             }
@@ -109,60 +161,6 @@ impl Youtube {
         } else {
             Ok(m3u8_url.to_string())
         }
-    }
-
-    pub async fn get_live_info(
-        client: &Client, room_url: &str,
-    ) -> anyhow::Result<(String, String, String, bool, String, String)> {
-        let resp = client
-            .get(room_url)
-            .header("Accept-Language", "en-US")
-            .header("Connection", "keep-alive")
-            .header("Referer", "https://www.youtube.com/")
-            .send()
-            .await?
-            .text()
-            .await?;
-
-        let re_cover = Regex::new(r#"link\s+rel="image_src"\s+href="([^"]+)""#).unwrap();
-        let re_owner = Regex::new(r#"meta\s+property="og:title"\s+content="([^"]+)""#).unwrap();
-        let avatar = re_cover.captures(&resp).and_then(|x| x.get(1)).map(|x| x.as_str());
-        let owner = re_owner.captures(&resp).and_then(|x| x.get(1)).map(|x| x.as_str());
-
-        let re = Regex::new(r"ytInitialPlayerResponse\s*=\s*(\{.+?\});.*?</script>").unwrap();
-        let j: Option<serde_json::Value> =
-            serde_json::from_str(re.captures(&resp).and_then(|x| x.get(1)).map_or("", |x| x.as_str())).ok();
-        let j = j.as_ref();
-        let owner = j.and_then(|x| x.pointer("/videoDetails/author")?.as_str()).or(owner).ok_or_else(|| dmlerr!())?;
-        let title = j.and_then(|x| x.pointer("/videoDetails/title")?.as_str()).unwrap_or("没有直播标题");
-        let cover = j
-            .and_then(|x| {
-                x.pointer("/videoDetails/thumbnail/thumbnails")?.as_array()?.last()?.pointer("/url")?.as_str()
-            })
-            .or(avatar)
-            .ok_or_else(|| dmlerr!())?;
-        let cid = j
-            .and_then(|x| {
-                x.pointer("/microformat/playerMicroformatRenderer/ownerProfileUrl")?
-                    .as_str()?
-                    .split('/')
-                    .last()?
-                    .strip_prefix("@")
-            })
-            .unwrap_or("");
-        let is_live = j.and_then(|x| x.pointer("/videoDetails/isLive")?.as_bool()).unwrap_or(false);
-
-        let mpd_url = j.and_then(|x| x.pointer("/streamingData/dashManifestUrl")?.as_str()).unwrap_or("");
-        // let hls_url = j.pointer("/streamingData/hlsManifestUrl").ok_or_else(|| dmlerr!())?.as_str().unwrap();
-
-        Ok((
-            owner.to_string(),
-            title.to_string(),
-            cover.to_string(),
-            is_live,
-            cid.to_string(),
-            mpd_url.to_string(),
-        ))
     }
 
     pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<&'static str, String>> {
@@ -176,14 +174,14 @@ impl Youtube {
                 .path_segments()
                 .and_then(|x| x.last().and_then(|x| x.strip_prefix("@")))
                 .ok_or_else(|| dmlerr!())?;
-            format!("https://www.youtube.com/@{}/live", &cid)
+            format!("https://www.youtube.com/@{cid}/live")
         } else {
             let vid = url.query_pairs().find(|q| q.0.eq("v")).unwrap().1;
-            format!("https://www.youtube.com/watch?v={}", &vid)
+            format!("https://www.youtube.com/watch?v={vid}")
         };
 
-        let room_info = Self::get_live_info(&client, &room_url).await?;
-        info!("{:?}", &room_info);
+        let room_info = get_live_info(&client, &room_url).await?;
+        info!("{room_info:?}");
         room_info.3.then(|| 0).ok_or_else(|| dmlerr!())?;
 
         // let urls = self.decode_m3u8(&client, &hls_url).await?;

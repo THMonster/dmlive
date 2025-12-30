@@ -14,6 +14,33 @@ const BILI_APIV: &'static str = "https://api.bilibili.com/x/player/wbi/playurl";
 // const BILI_APIV_EP: &'static str = "https://api.bilibili.com/pgc/player/web/playurl";
 const BILI_APIV_EP_LIST: &'static str = "https://api.bilibili.com/pgc/view/web/ep/list";
 
+pub async fn get_live_info(client: &reqwest::Client, rid: &str) -> anyhow::Result<(String, String, String, bool)> {
+    let mut param1 = Vec::new();
+    param1.push(("room_ids", rid));
+    param1.push(("req_biz", "web_room_componet"));
+    let resp = client
+        .get(BILI_API2)
+        .query(&param1)
+        .header("User-Agent", crate::utils::gen_ua())
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+    let j = resp.pointer("/data/by_room_ids").and_then(|x| x.as_object()).ok_or_else(|| dmlerr!())?;
+    let j = j.iter().next().ok_or_else(|| dmlerr!())?.1;
+    let title = j.pointer("/title").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?;
+    let uname = j.pointer("/uname").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?;
+    let bg = j.pointer("/background").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?;
+    let cover = j.pointer("/cover").and_then(|x| x.as_str()).unwrap_or(bg);
+    let is_living = j.pointer("/live_status").and_then(|x| x.as_i64()).ok_or_else(|| dmlerr!())?;
+    Ok((
+        uname.to_string(),
+        title.to_string(),
+        cover.to_string(),
+        if is_living == 1 { true } else { false },
+    ))
+}
+
 pub struct Bilibili {
     ctx: Rc<DMLContext>,
 }
@@ -21,33 +48,6 @@ pub struct Bilibili {
 impl Bilibili {
     pub fn new(ctx: Rc<DMLContext>) -> Self {
         Bilibili { ctx }
-    }
-
-    pub async fn get_live_info(client: &reqwest::Client, rid: &str) -> anyhow::Result<(String, String, String, bool)> {
-        let mut param1 = Vec::new();
-        param1.push(("room_ids", rid));
-        param1.push(("req_biz", "web_room_componet"));
-        let resp = client
-            .get(BILI_API2)
-            .query(&param1)
-            .header("User-Agent", crate::utils::gen_ua())
-            .send()
-            .await?
-            .json::<serde_json::Value>()
-            .await?;
-        let j = resp.pointer("/data/by_room_ids").and_then(|x| x.as_object()).ok_or_else(|| dmlerr!())?;
-        let j = j.iter().next().ok_or_else(|| dmlerr!())?.1;
-        let title = j.pointer("/title").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?;
-        let uname = j.pointer("/uname").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?;
-        let bg = j.pointer("/background").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?;
-        let cover = j.pointer("/cover").and_then(|x| x.as_str()).unwrap_or(bg);
-        let is_living = j.pointer("/live_status").and_then(|x| x.as_i64()).ok_or_else(|| dmlerr!())?;
-        Ok((
-            uname.to_string(),
-            title.to_string(),
-            cover.to_string(),
-            if is_living == 1 { true } else { false },
-        ))
     }
 
     pub async fn get_live(&self, room_url: &str) -> Result<HashMap<&'static str, String>> {
@@ -60,7 +60,7 @@ impl Bilibili {
         let mut ret = HashMap::new();
         let mut param1 = Vec::new();
 
-        let room_info = Self::get_live_info(&client, &rid).await?;
+        let room_info = get_live_info(&client, &rid).await?;
         room_info.3.then(|| 0).ok_or_else(|| dmlerr!())?;
         ret.insert("title", format!("{} - {}", room_info.1, room_info.0));
 
