@@ -21,10 +21,9 @@ jobs:
       - run: cargo build --release
       - run: mv ./target/aarch64-linux-android/dmlive ./dmlive-aarch64-android 
 
-    - uses: ncipollo/release-action@v1
-      with:
-        allowUpdates: true
-        tag: "release"
-        artifacts: "./dmlive-aarch64-android"
-        token: ${{ secrets.GITHUB_TOKEN }}
-
+      - uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          tag: "release"
+          artifacts: "./dmlive-aarch64-android"
+          token: ${{ secrets.GITHUB_TOKEN }}
