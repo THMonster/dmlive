@@ -68,19 +68,20 @@ impl Bilibili {
         param1.push(("qn", "20000"));
         param1.push(("platform", "web"));
         param1.push(("cid", rid.as_str()));
-        let resp = client
-            .get(BILI_API3)
-            .header("Referer", room_url)
-            .query(&param1)
-            .send()
-            .await?
-            .json::<serde_json::Value>()
-            .await?;
-        info!("{}", &resp.to_string());
-        let url = match resp.pointer("/data/durl/0/url").and_then(|x| x.as_str()) {
-            Some(it) => it.to_string(),
-            None => self.get_live_new(room_url).await?,
-        };
+        // let resp = client
+        //     .get(BILI_API3)
+        //     .header("Referer", room_url)
+        //     .query(&param1)
+        //     .send()
+        //     .await?
+        //     .json::<serde_json::Value>()
+        //     .await?;
+        // info!("{resp:?}");
+        // let url = match resp.pointer("/data/durl/0/url").and_then(|x| x.as_str()) {
+        //     Some(it) => it.to_string(),
+        //     None => self.get_live_new(room_url).await?,
+        // };
+        let url = self.get_live_new(room_url).await?;
         ret.insert("url", url);
         Ok(ret)
     }

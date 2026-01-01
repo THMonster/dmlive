@@ -68,7 +68,7 @@ impl DMLive {
         }
         match self.ctx.im.stop().await {
             Ok(_) => {}
-            Err(err) => info!("ipc manager stop error: {}", err),
+            Err(err) => info!("ipc manager stop error: {err}"),
         };
     }
 
@@ -109,12 +109,12 @@ impl DMLive {
                 // self.quit().await;
             }
             DMLMessage::SetVideoInfo((w, h, pts)) => {
-                info!("video info: w {} h {} pts {}", w, h, pts);
+                info!("video info: w {w} h {h} pts {pts}");
                 // danmaku task
                 if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
                     let _ = self.dm.run_bilivideo(16.0 * h as f64 / w as f64 / 9.0).await;
                 } else {
-                    self.dm.set_ratio_scale(16.0 * h as f64 / w as f64 / 9.0);
+                    self.dm.set_ratio_scale((16.0 / 9.0) / (w as f64 / h as f64));
                     // let _ = self.dm.run(16.0 * h as f64 / w as f64 / 9.0, pts).await;
                 }
             }

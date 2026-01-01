@@ -107,7 +107,7 @@ impl Huya {
                 let huya_danmaku = ios.read_struct(6, false, HuyaDanmaku { color: 16777215 })?;
                 let dml_dm = DMLDanmaku {
                     time: 0,
-                    text,
+                    text: text.trim().to_string(),
                     nick: user.name,
                     color: format!(
                         "{:06x}",

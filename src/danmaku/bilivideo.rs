@@ -45,7 +45,7 @@ impl Bilibili {
                 let color = format!("{:06x}", tmps[3].parse::<u64>().unwrap_or(16777215));
                 let dml_dm = DMLDanmaku {
                     time,
-                    text: text.to_string(),
+                    text: text.trim().to_string(),
                     nick: "".to_string(),
                     color: color.to_string(),
                     position,

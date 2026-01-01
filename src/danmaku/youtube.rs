@@ -141,7 +141,7 @@ impl Youtube {
         }
         let dml_dm = DMLDanmaku {
             time: 0,
-            text: msg,
+            text: msg.trim().to_string(),
             nick,
             color: "ffffff".to_string(),
             position: 0,

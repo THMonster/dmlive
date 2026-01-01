@@ -21,12 +21,12 @@ jobs:
             rust: stable
             cross: true
             target: aarch64-unknown-linux-musl
-          - build: aarch64-android
-            os: ubuntu-latest
-            # rust: 1.67.0
-            rust: stable
-            cross: true
-            target: aarch64-linux-android
+          # - build: aarch64-android
+          #   os: ubuntu-latest
+          #   # rust: 1.67.0
+          #   rust: stable
+          #   cross: true
+          #   target: aarch64-linux-android
           - build: amd64
             os: ubuntu-latest
             rust: stable

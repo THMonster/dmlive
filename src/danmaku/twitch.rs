@@ -44,7 +44,7 @@ impl Twitch {
             };
             let re = Regex::new(r#"PRIVMSG [^:]+:(.+)"#).unwrap();
             let text = match re.captures(m) {
-                Some(it) => it[1].to_string(),
+                Some(it) => it[1].trim().to_string(),
                 _ => continue,
             };
             let re = Regex::new(r#"color=#([a-zA-Z0-9]{6});"#).unwrap();

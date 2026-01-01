@@ -1,0 +1,31 @@
+name: BUILD_ANDROID
+
+on:
+  push:
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+      - name: Install Rust
+        run: rustup update stable
+      - name: Install cross-compilation tools
+        uses: taiki-e/setup-cross-toolchain-action@v1
+        with:
+          target: aarch64-linux-android
+      # setup-cross-toolchain-action sets the `CARGO_BUILD_TARGET` environment variable,
+      # so there is no need for an explicit `--target` flag.
+      - run: cargo build --release
+    - run: mv ./target/aarch64-linux-android/dmlive ./dmlive-aarch64-android 
+
+    - uses: ncipollo/release-action@v1
+      with:
+        allowUpdates: true
+        tag: "release"
+        artifacts: "./dmlive-aarch64-android"
+        token: ${{ secrets.GITHUB_TOKEN }}
+

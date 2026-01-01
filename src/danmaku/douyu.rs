@@ -90,7 +90,7 @@ impl Douyu {
                 let nick = j.pointer("/nn").ok_or_else(|| dmlerr!())?.as_str().unwrap();
                 let dml_dm = DMLDanmaku {
                     time: 0,
-                    text: text.to_string(),
+                    text: text.trim().to_string(),
                     nick: nick.to_string(),
                     color: self.color_tab.get(color).unwrap_or(&"ffffff").to_string(),
                     position: 0,

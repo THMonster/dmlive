@@ -129,7 +129,7 @@ impl Bilibili {
                 let nick = j.pointer("/info/2/1").ok_or_else(|| dmlerr!())?.as_str().unwrap();
                 let dml_dm = DMLDanmaku {
                     time: 0,
-                    text: text.to_string(),
+                    text: text.trim().to_string(),
                     nick: nick.to_string(),
                     color: format!("{:06x}", color),
                     position: 0,
@@ -142,7 +142,7 @@ impl Bilibili {
                 let nick = j.pointer("/data/user_info/uname").ok_or_else(|| dmlerr!())?.as_str().unwrap();
                 let dml_dm = DMLDanmaku {
                     time: 0,
-                    text: format!("[SC]{}", text),
+                    text: format!("[SC]{text}"),
                     nick: nick.to_string(),
                     color: format!("{}", &color[1..]),
                     position: 8,

@@ -28,7 +28,7 @@ impl Baha {
             let color = d.pointer("/color").ok_or_else(|| dmlerr!())?.as_str().unwrap().strip_prefix("#").unwrap_or("FFFFFF");
             let dml_dm = DMLDanmaku {
                 time,
-                text: text.to_string(),
+                text: text.trim().to_string(),
                 nick: "".to_string(),
                 color: color.to_string(),
                 position,
