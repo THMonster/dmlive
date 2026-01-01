@@ -38,18 +38,17 @@ async-channel = "2.5"
 directories = "6"
 anyhow = "1"
 bytes = "1.11"
-
-[target.'cfg(target_os = "android")'.dependencies]
-rquickjs = { version = "0.11", features = ["bindgen"] }
-[target.'cfg(not(target_os = "android"))'.dependencies]
-rquickjs = "0.11"
-
 tars-stream = { path = "tars-stream"}
 ring = "*"
 cbc = "*"
 aes = "*"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 async-compression = { version = "0.4", features = ["tokio", "deflate", "brotli"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+rquickjs = { version = "0.11", features = ["bindgen"] }
+[target.'cfg(not(target_os = "android"))'.dependencies]
+rquickjs = "0.11"
 
 [profile.release]
 panic = 'abort'
