@@ -10,21 +10,22 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
-      - name: Install Rust
-        run: rustup update stable
-      - name: Install cross-compilation tools
-        uses: taiki-e/setup-cross-toolchain-action@v1
-        with:
-          target: aarch64-linux-android
+      # - name: Install Rust
+      #   run: rustup update stable
+      # - name: Install cross-compilation tools
+      #   uses: taiki-e/setup-cross-toolchain-action@v1
+      #   with:
+      #     target: aarch64-linux-android
       # setup-cross-toolchain-action sets the `CARGO_BUILD_TARGET` environment variable,
       # so there is no need for an explicit `--target` flag.
       - run: |
+          rustup target add aarch64-linux-android
           export CC_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang
           export CXX_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang++
           export AR_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC_aarch64_linux_android
           export CLANG_PATH=$CC_aarch64_linux_android
-          cargo build --release
+          cargo build --target aarch64-linux-android --release
       - run: mv ./target/aarch64-linux-android/dmlive ./dmlive-aarch64-android 
 
       - uses: ncipollo/release-action@v1
