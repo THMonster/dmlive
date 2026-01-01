@@ -9,7 +9,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        build: [aarch64, aarch64-musl, aarch64-android, amd64, amd64-musl]
+        build: [aarch64, aarch64-musl, amd64, amd64-musl]
         include:
           - build: aarch64
             os: ubuntu-latest

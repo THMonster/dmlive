@@ -5,7 +5,6 @@ on:
 
 jobs:
   build-android:
-    name: build-android
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,7 +19,7 @@ jobs:
       # setup-cross-toolchain-action sets the `CARGO_BUILD_TARGET` environment variable,
       # so there is no need for an explicit `--target` flag.
       - run: cargo build --release
-    - run: mv ./target/aarch64-linux-android/dmlive ./dmlive-aarch64-android 
+      - run: mv ./target/aarch64-linux-android/dmlive ./dmlive-aarch64-android 
 
     - uses: ncipollo/release-action@v1
       with:
