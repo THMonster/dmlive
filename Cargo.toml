@@ -38,7 +38,12 @@ async-channel = "2.5"
 directories = "6"
 anyhow = "1"
 bytes = "1.11"
-rquickjs= "0.11"
+
+[target.'cfg(target_os = "android")'.dependencies]
+rquickjs = { version = "0.11", features = ["bindgen"] }
+[target.'cfg(not(target_os = "android"))'.dependencies]
+rquickjs = "0.11"
+
 tars-stream = { path = "tars-stream"}
 ring = "*"
 cbc = "*"
