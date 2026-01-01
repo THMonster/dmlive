@@ -28,7 +28,7 @@ jobs:
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC_aarch64_linux_android
           export CLANG_PATH=$CC_aarch64_linux_android
           cargo build --target aarch64-linux-android --release
-      - run: mv ./target/aarch64-linux-android/dmlive ./dmlive-aarch64-android 
+      - run: mv ./target/aarch64-linux-android/release/dmlive ./dmlive-aarch64-android 
 
       - uses: ncipollo/release-action@v1
         with:
