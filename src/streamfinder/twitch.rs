@@ -1,8 +1,7 @@
-use crate::dmlerr;
+use crate::{dmlerr, dmlive::DMLContext};
 use log::info;
 use regex::Regex;
-use std::collections::HashMap;
-use url::Url;
+use std::{collections::HashMap, rc::Rc};
 
 const TTV_API1: &'static str = "https://gql.twitch.tv/gql";
 const TTV_API2: &'static str = "https://usher.ttvnw.net/api/channel/hls/{channel}.m3u8";
@@ -38,19 +37,21 @@ pub async fn get_live_info(client: &reqwest::Client, rid: &str) -> anyhow::Resul
     ))
 }
 
-pub struct Twitch {}
+pub struct Twitch {
+    ctx: Rc<DMLContext>,
+}
 
 impl Twitch {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
+        Self { ctx }
     }
 
-    pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<&'static str, String>> {
-        let rid = Url::parse(room_url)?.path_segments().and_then(|x| x.last()).ok_or_else(|| dmlerr!())?.to_string();
+    pub async fn get_live(&self) -> anyhow::Result<HashMap<&'static str, String>> {
         let client = reqwest::Client::new();
         let mut ret = HashMap::new();
 
-        let room_info = get_live_info(&client, &rid).await?;
+        let rid = self.ctx.cm.room_id.as_str();
+        let room_info = get_live_info(&client, rid).await?;
         room_info.3.then(|| 0).ok_or_else(|| dmlerr!())?;
         ret.insert("title", format!("{} - {}", room_info.1, room_info.0));
         let mut param1 = Vec::new();

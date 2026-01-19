@@ -61,7 +61,6 @@ pub struct Danmaku {
     channel_num: Cell<usize>,
     ratio_scale: Cell<f64>,
     read_order: Cell<usize>,
-    bili_video_cid: RefCell<String>,
     dchannels: RefCell<Vec<DanmakuChannel>>,
     fk: fudujikiller::FudujiKiller,
 }
@@ -84,7 +83,6 @@ impl Danmaku {
             ratio_scale: Cell::new(1.0),
             read_order: Cell::new(0),
             fk: fudujikiller::FudujiKiller::new(),
-            bili_video_cid: RefCell::new("".into()),
             dchannels: RefCell::new(ch),
         }
     }
@@ -122,12 +120,6 @@ impl Danmaku {
 
     pub fn set_ratio_scale(&self, ratio_scale: f64) {
         self.ratio_scale.set(ratio_scale);
-    }
-
-    pub async fn set_bili_video_cid(&self, cid: &str) {
-        let mut bvc = self.bili_video_cid.borrow_mut();
-        bvc.clear();
-        bvc.push_str(cid);
     }
 
     pub async fn toggle_show_nick(&self) {
@@ -361,40 +353,32 @@ impl Danmaku {
         loop {
             match match self.ctx.cm.site {
                 crate::config::Site::BiliLive => {
-                    let b = bilibili::Bilibili::new();
-                    b.run(&self.ctx.cm.room_url, dtx.clone()).await
+                    let b = bilibili::Bilibili::new(self.ctx.clone());
+                    b.run(dtx.clone()).await
                 }
                 crate::config::Site::BiliVideo => {
-                    let b = bilivideo::Bilibili::new();
-                    b.run(
-                        format!(
-                            "http://api.bilibili.com/x/v1/dm/list.so?oid={}",
-                            self.bili_video_cid.borrow()
-                        )
-                        .as_str(),
-                        dtx.clone(),
-                    )
-                    .await
+                    let b = bilivideo::Bilibili::new(self.ctx.clone());
+                    b.run(dtx.clone()).await
                 }
                 crate::config::Site::BahaVideo => {
-                    let b = baha::Baha::new();
-                    b.run(self.bili_video_cid.borrow().to_string(), dtx.clone()).await
+                    let b = baha::Baha::new(self.ctx.clone());
+                    b.run(dtx.clone()).await
                 }
                 crate::config::Site::DouyuLive => {
-                    let b = douyu::Douyu::new();
-                    b.run(&self.ctx.cm.room_url, dtx.clone()).await
+                    let b = douyu::Douyu::new(self.ctx.clone());
+                    b.run(dtx.clone()).await
                 }
                 crate::config::Site::HuyaLive => {
-                    let b = huya::Huya::new();
-                    b.run(&self.ctx.cm.room_url, dtx.clone()).await
+                    let b = huya::Huya::new(self.ctx.clone());
+                    b.run(dtx.clone()).await
                 }
                 crate::config::Site::TwitchLive => {
-                    let b = twitch::Twitch::new();
-                    b.run(&self.ctx.cm.room_url, dtx.clone()).await
+                    let b = twitch::Twitch::new(self.ctx.clone());
+                    b.run(dtx.clone()).await
                 }
                 crate::config::Site::YoutubeLive => {
-                    let b = youtube::Youtube::new();
-                    b.run(&self.ctx.cm.room_url, dtx.clone()).await
+                    let b = youtube::Youtube::new(self.ctx.clone());
+                    b.run(dtx.clone()).await
                 }
             } {
                 Ok(_) => {}

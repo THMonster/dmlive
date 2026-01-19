@@ -1,13 +1,13 @@
-use crate::{dmlerr, utils};
 use base64::{Engine, engine::general_purpose};
 use chrono::prelude::*;
 use log::*;
 use regex::Regex;
 use reqwest::Client;
 use serde_json::{Value, json};
+use std::rc::Rc;
 use tokio::time::{Duration, sleep};
 
-use super::DMLDanmaku;
+use crate::{danmaku::DMLDanmaku, dmlerr, dmlive::DMLContext, utils};
 
 const YTB_KEY: &'static [u8] =
     b"eW91dHViZWkvdjEvbGl2ZV9jaGF0L2dldF9saXZlX2NoYXQ/a2V5PUFJemFTeUFPX0ZKMlNscVU4UTRTVEVITEdDaWx3X1k5XzExcWNXOA==";
@@ -71,37 +71,20 @@ fn get_param(vid: &str, cid: &str) -> String {
 
 pub struct Youtube {
     key: String,
-    ua: String,
+    ctx: Rc<DMLContext>,
 }
 
 impl Youtube {
-    pub fn new() -> Self {
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
         Youtube {
             key: String::from_utf8_lossy(general_purpose::STANDARD.decode(YTB_KEY).unwrap().as_ref()).to_string(),
-            ua: utils::gen_ua(),
+            ctx,
         }
     }
 
-    async fn get_room_info(&self, url: &str, client: &Client) -> anyhow::Result<(String, String)> {
-        let url = url::Url::parse(url)?;
-        let room_url = if url.as_str().contains("youtube.com/@") {
-            let cid = url
-                .path_segments()
-                .ok_or_else(|| dmlerr!())?
-                .last()
-                .ok_or_else(|| dmlerr!())?
-                .strip_prefix("@")
-                .ok_or_else(|| dmlerr!())?;
-            format!("https://www.youtube.com/@{}/live", &cid)
-        } else {
-            // for q in url.query_pairs() {
-            //     if q.0.eq("v") {}
-            // }
-            let vid = url.query_pairs().find(|q| q.0.eq("v")).unwrap().1;
-            format!("https://www.youtube.com/watch?v={}", &vid)
-        };
+    async fn get_room_info(&self, client: &Client) -> anyhow::Result<(String, String)> {
         let resp = client
-            .get(&room_url)
+            .get(self.ctx.cm.room_url.as_str())
             .header("Connection", "keep-alive")
             .header("Accept-Language", "en-US")
             .header("Referer", "https://www.youtube.com/")
@@ -155,7 +138,7 @@ impl Youtube {
             "context": {
                 "client": {
                     "visitorData": "",
-                    "userAgent": self.ua,
+                    "userAgent": utils::gen_ua(),
                     "clientName": "WEB",
                     "clientVersion": format!("2.{}.01.00", (Utc::now() - chrono::Duration::days(2)).format("%Y%m%d")),
                 },
@@ -205,10 +188,10 @@ impl Youtube {
         Ok(ret)
     }
 
-    pub async fn run(&self, url: &str, dtx: async_channel::Sender<DMLDanmaku>) -> anyhow::Result<()> {
+    pub async fn run(&self, dtx: async_channel::Sender<DMLDanmaku>) -> anyhow::Result<()> {
         let client =
-            reqwest::Client::builder().user_agent(self.ua.clone()).connect_timeout(Duration::from_secs(10)).build()?;
-        let (vid, cid) = self.get_room_info(url, &client).await?;
+            reqwest::Client::builder().user_agent(utils::gen_ua()).connect_timeout(Duration::from_secs(10)).build()?;
+        let (vid, cid) = self.get_room_info(&client).await?;
         let mut ctn = get_param(&vid, &cid);
 
         let mut interval = tokio::time::interval(Duration::from_millis(2000));

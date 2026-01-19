@@ -3,9 +3,8 @@ use bytes::{Buf, BufMut, Bytes};
 use chrono::Utc;
 use futures::{SinkExt, stream::StreamExt};
 use log::info;
-use reqwest::Url;
 use serde_json::json;
-use std::collections::VecDeque;
+use std::{collections::VecDeque, rc::Rc};
 use tokio::{
     io::{AsyncReadExt, BufReader},
     sync::mpsc,
@@ -14,7 +13,7 @@ use tokio::{
 use tokio_tungstenite::{connect_async, tungstenite::Message::Binary};
 // use wincode::{SchemaRead, SchemaWrite};
 
-use crate::dmlerr;
+use crate::{dmlerr, dmlive::DMLContext};
 
 use super::DMLDanmaku;
 
@@ -32,11 +31,13 @@ struct BiliDanmakuHeader {
     seq: u32,
 }
 
-pub struct Bilibili {}
+pub struct Bilibili {
+    ctx: Rc<DMLContext>,
+}
 
 impl Bilibili {
-    pub fn new() -> Self {
-        Bilibili {}
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
+        Bilibili { ctx }
     }
 
     async fn get_buvid(&self, client: &reqwest::Client) -> anyhow::Result<(String, String, String)> {
@@ -50,17 +51,15 @@ impl Bilibili {
         ));
     }
 
-    async fn get_dm_token(
-        &self, client: &reqwest::Client, url: &str, rid: &str, cookies: &str,
-    ) -> anyhow::Result<String> {
+    async fn get_dm_token(&self, client: &reqwest::Client, cookies: &str) -> anyhow::Result<String> {
         let keys = crate::utils::bili_wbi::get_wbi_keys(&cookies).await?;
-        let param1 = vec![("id", rid.to_string()), ("type", "0".to_string())];
+        let param1 = vec![("id", self.ctx.cm.room_id.to_string()), ("type", "0".to_string())];
         let query = crate::utils::bili_wbi::encode_wbi(param1, keys);
         info!("{:?}", &query);
         let resp = client
             .get(format!("{}?{}", API_DMINFO, query))
             .header("User-Agent", crate::utils::gen_ua())
-            .header("Referer", url)
+            .header("Referer", self.ctx.cm.room_url.as_str())
             .header("Cookie", cookies)
             .send()
             .await?
@@ -71,16 +70,14 @@ impl Bilibili {
         Ok(token.to_string())
     }
 
-    async fn get_ws_info(&self, url: &str) -> anyhow::Result<(String, Bytes)> {
-        let rid =
-            Url::parse(url)?.path_segments().ok_or_else(|| dmlerr!())?.last().ok_or_else(|| dmlerr!())?.to_string();
+    async fn get_ws_info(&self) -> anyhow::Result<(String, Bytes)> {
         let mut reg_data = bytes::BytesMut::with_capacity(200);
         let client = reqwest::Client::builder().user_agent(crate::utils::gen_ua()).build()?;
         let (buvid3, buvid4, b_nut) = self.get_buvid(&client).await?;
-        let param1 = vec![("id", rid.as_str())];
+        let param1 = vec![("id", self.ctx.cm.room_id.as_str())];
         let resp = client
             .get(API_ROOMINIT)
-            .header("Referer", url)
+            .header("Referer", self.ctx.cm.room_url.as_str())
             .query(&param1)
             .send()
             .await?
@@ -88,7 +85,7 @@ impl Bilibili {
             .await?;
         let rid = resp.pointer("/data/room_id").ok_or_else(|| dmlerr!())?.as_u64().ok_or_else(|| dmlerr!())?;
         let cookie = format!("buvid3={}; b_nut={}; buvid4={}", &buvid3, &b_nut, &buvid4);
-        let token = self.get_dm_token(&client, url, rid.to_string().as_str(), &cookie).await?;
+        let token = self.get_dm_token(&client, &cookie).await?;
         // let rn = rand::random::<u64>();
         // let uid = 1000000 + (rn % 1000000);
         let out_json = json!({"roomid": rid, "uid": 0, "protover": 3, "platform": "web", "type": 2, "buvid": buvid3, "key": token});
@@ -199,9 +196,9 @@ impl Bilibili {
         Ok(ret)
     }
 
-    pub async fn run(&self, url: &str, dtx: async_channel::Sender<DMLDanmaku>) -> anyhow::Result<()> {
+    pub async fn run(&self, dtx: async_channel::Sender<DMLDanmaku>) -> anyhow::Result<()> {
         let (tx, mut rx) = mpsc::channel(10);
-        let (ws, reg_data) = self.get_ws_info(url).await?;
+        let (ws, reg_data) = self.get_ws_info().await?;
         let (ws_stream, _) = connect_async(&ws).await?;
         let (mut ws_write, mut ws_read) = ws_stream.split();
         ws_write.send(Binary(reg_data.into())).await?;

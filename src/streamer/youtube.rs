@@ -24,7 +24,6 @@ fn get_head_sq_and_time(resp: &Response) -> anyhow::Result<(u64, u64)> {
 
 #[allow(unused)]
 pub struct Youtube {
-    room_url: String,
     url_v: RefCell<String>,
     url_a: RefCell<String>,
     sq: Cell<u64>,
@@ -41,7 +40,6 @@ impl Youtube {
             sq: Cell::new(stream_info["sq"].parse().unwrap_or(1)),
             itvl: Cell::new(1000),
             stream_ready: Cell::new(false),
-            room_url: stream_info["room_url"].to_string(),
             ctx,
         }
     }
@@ -140,7 +138,7 @@ impl Youtube {
         interval.tick().await;
         loop {
             interval.tick().await;
-            let info = streamfinder::youtube::get_live_info(client, self.room_url.as_str()).await?;
+            let info = streamfinder::youtube::get_live_info(client, self.ctx.cm.room_url.as_str()).await?;
             let mut info = streamfinder::youtube::Youtube::decode_mpd(client, &info.5).await?;
             *self.url_v.borrow_mut() = info.remove("url_v").unwrap();
             *self.url_a.borrow_mut() = info.remove("url_a").unwrap();

@@ -35,7 +35,7 @@ fn main() {
             let _ = tokio::fs::File::create(&config_path).await;
         }
         let mut cm = ConfigManager::new(config_path, &args);
-        cm.init().await.unwrap();
+        cm.init().await;
         let cm = Rc::new(cm);
         let mut im = dmlive::ipcmanager::IPCManager::new(cm.clone());
         im.run().await.unwrap();

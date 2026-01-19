@@ -2,16 +2,16 @@ use bytes::Bytes;
 use futures::{SinkExt, stream::StreamExt};
 use log::info;
 use regex::Regex;
-use reqwest::Url;
+use std::rc::Rc;
 use std::time::Duration;
 use tars_stream::prelude::*;
 use tokio::time::sleep;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message::Binary;
 
+use crate::danmaku::DMLDanmaku;
 use crate::dmlerr;
-
-use super::DMLDanmaku;
+use crate::dmlive::DMLContext;
 
 const HEARTBEAT: &'static [u8] =
     b"\x00\x03\x1d\x00\x00\x69\x00\x00\x00\x69\x10\x03\x2c\x3c\x4c\x56\x08\x6f\x6e\x6c\x69\x6e\x65\x75\x69\x66\x0f\x4f\x6e\x55\x73\x65\x72\x48\x65\x61\x72\x74\x42\x65\x61\x74\x7d\x00\x00\x3c\x08\x00\x01\x06\x04\x74\x52\x65\x71\x1d\x00\x00\x2f\x0a\x0a\x0c\x16\x00\x26\x00\x36\x07\x61\x64\x72\x5f\x77\x61\x70\x46\x00\x0b\x12\x03\xae\xf0\x0f\x22\x03\xae\xf0\x0f\x3c\x42\x6d\x52\x02\x60\x5c\x60\x01\x7c\x82\x00\x0b\xb0\x1f\x9c\xac\x0b\x8c\x98\x0c\xa8\x0c";
@@ -48,19 +48,19 @@ impl StructFromTars for HuyaDanmaku {
     }
 }
 
-pub struct Huya {}
+pub struct Huya {
+    ctx: Rc<DMLContext>,
+}
 
 impl Huya {
-    pub fn new() -> Self {
-        Huya {}
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
+        Huya { ctx }
     }
 
-    async fn get_ws_info(&self, url: &str) -> anyhow::Result<(String, Bytes)> {
-        let url = Url::parse(url)?;
-        let rid = url.path_segments().ok_or_else(|| dmlerr!())?.last().ok_or_else(|| dmlerr!())?;
+    async fn get_ws_info(&self) -> anyhow::Result<(String, Bytes)> {
         let client = reqwest::Client::new();
         let resp = client
-            .get(format!("https://www.huya.com/{}", &rid))
+            .get(format!("https://www.huya.com/{}", self.ctx.cm.room_id))
             .header("User-Agent", crate::utils::gen_ua())
             .header("Referer", "https://www.huya.com/")
             .send()
@@ -127,8 +127,8 @@ impl Huya {
         Ok(ret)
     }
 
-    pub async fn run(&self, url: &str, dtx: async_channel::Sender<DMLDanmaku>) -> anyhow::Result<()> {
-        let (ws, reg_data) = self.get_ws_info(url).await?;
+    pub async fn run(&self, dtx: async_channel::Sender<DMLDanmaku>) -> anyhow::Result<()> {
+        let (ws, reg_data) = self.get_ws_info().await?;
         let (ws_stream, _) = connect_async(&ws).await?;
         let (mut ws_write, mut ws_read) = ws_stream.split();
         ws_write.send(tokio_tungstenite::tungstenite::Message::Binary(reg_data)).await?;

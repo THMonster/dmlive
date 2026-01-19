@@ -5,7 +5,6 @@ use anyhow::Result;
 use log::info;
 use regex::Regex;
 use std::{collections::HashMap, rc::Rc};
-use url::Url;
 
 const BILI_API1: &'static str = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo";
 const BILI_API2: &'static str = "https://api.live.bilibili.com/xlive/web-room/v1/index/getRoomBaseInfo";
@@ -50,8 +49,8 @@ impl Bilibili {
         Bilibili { ctx }
     }
 
-    pub async fn get_live(&self, room_url: &str) -> Result<HashMap<&'static str, String>> {
-        let rid = Url::parse(room_url)?.path_segments().and_then(|x| x.last()).ok_or_else(|| dmlerr!())?.to_string();
+    pub async fn get_live(&self) -> Result<HashMap<&'static str, String>> {
+        let rid = self.ctx.cm.room_id.as_str();
         let client = reqwest::Client::builder()
             .user_agent(crate::utils::gen_ua())
             .connect_timeout(tokio::time::Duration::from_secs(10))
@@ -60,14 +59,14 @@ impl Bilibili {
         let mut ret = HashMap::new();
         let mut param1 = Vec::new();
 
-        let room_info = get_live_info(&client, &rid).await?;
+        let room_info = get_live_info(&client, rid).await?;
         room_info.3.then(|| 0).ok_or_else(|| dmlerr!())?;
         ret.insert("title", format!("{} - {}", room_info.1, room_info.0));
 
         param1.clear();
         param1.push(("qn", "20000"));
         param1.push(("platform", "web"));
-        param1.push(("cid", rid.as_str()));
+        param1.push(("cid", rid));
         // let resp = client
         //     .get(BILI_API3)
         //     .header("Referer", room_url)
@@ -81,15 +80,15 @@ impl Bilibili {
         //     Some(it) => it.to_string(),
         //     None => self.get_live_new(room_url).await?,
         // };
-        let url = self.get_live_new(room_url).await?;
+        let url = self.get_live_new().await?;
         ret.insert("url", url);
         Ok(ret)
     }
 
     #[allow(unused)]
-    pub async fn get_live_new(&self, room_url: &str) -> Result<String> {
+    pub async fn get_live_new(&self) -> Result<String> {
         // pub async fn get_live_new(&self, room_url: &str) -> Result<HashMap<&'static str, String>> {
-        let rid = Url::parse(room_url)?.path_segments().and_then(|x| x.last()).ok_or_else(|| dmlerr!())?.to_string();
+        let rid = self.ctx.cm.room_id.as_str();
         let client = reqwest::Client::builder()
             .user_agent(crate::utils::gen_ua())
             .connect_timeout(tokio::time::Duration::from_secs(10))
@@ -99,7 +98,7 @@ impl Bilibili {
         // room_id=114514&protocol=0,1&format=0,1,2&codec=0,1,2&qn=10000&platform=web&ptype=8&dolby=5&panorama=1
         // param1.push(("no_playurl", "0"));
         // param1.push(("mask", "1"));
-        param1.push(("room_id", rid.as_str()));
+        param1.push(("room_id", rid));
         param1.push(("protocol", "0,1"));
         param1.push(("format", "0,1,2"));
         param1.push(("codec", "0,1"));
@@ -116,7 +115,7 @@ impl Bilibili {
         };
         let resp = client
             .get(BILI_API1)
-            .header("Referer", room_url)
+            .header("Referer", &self.ctx.cm.room_url)
             .header("Cookie", cookie)
             .query(&param1)
             .send()
@@ -133,7 +132,8 @@ impl Bilibili {
         ));
     }
 
-    pub async fn get_page_info_ep(&self, video_url: &str, mut page: usize) -> Result<(String, String, String, String)> {
+    pub async fn get_page_info_ep(&self, video_url: &str) -> Result<(String, String, String, String)> {
+        let mut page = self.ctx.cm.bvideo_info.borrow().current_page;
         let client = reqwest::Client::builder()
             .user_agent(crate::utils::gen_ua_safari())
             .connect_timeout(tokio::time::Duration::from_secs(10))
@@ -176,7 +176,8 @@ impl Bilibili {
         Ok((bvid, cid, format!("{} - {}", &title, page), link))
     }
 
-    pub async fn get_page_info(&self, html: &str, mut page: usize) -> Result<(String, String, String, String)> {
+    pub async fn get_page_info(&self, html: &str) -> Result<(String, String, String, String)> {
+        let mut page = self.ctx.cm.bvideo_info.borrow().current_page;
         let re = Regex::new(r"__INITIAL_STATE__=(\{.+?\});").unwrap();
         let j: serde_json::Value =
             serde_json::from_str(re.captures(html).and_then(|x| x.get(1)).ok_or_else(|| dmlerr!())?.as_str())?;
@@ -212,7 +213,7 @@ impl Bilibili {
         ))
     }
 
-    pub async fn get_video(&self, page: usize) -> Result<HashMap<&'static str, String>> {
+    pub async fn get_video(&self) -> Result<HashMap<&'static str, String>> {
         let f1 = |j: &serde_json::Value, ret: &mut HashMap<_, _>| -> _ {
             let mut videos = HashMap::new();
             let mut audios = HashMap::new();
@@ -287,7 +288,7 @@ impl Bilibili {
         ) {
             let u = self.ctx.cm.bvideo_info.borrow().base_url.clone();
             // let (bvid, cid, title, referer, _season_type) = self.get_page_info_ep(&u, page).await?;
-            let (_bvid, cid, title, link) = self.get_page_info_ep(&u, page).await?;
+            let (_bvid, cid, title, link) = self.get_page_info_ep(&u).await?;
             ret.insert("title", title);
             ret.insert("bili_cid", cid);
             let resp =
@@ -309,7 +310,7 @@ impl Bilibili {
             };
             param1.push(("p", p));
             let resp = client.get(&u).header("Cookie", &cookies).query(&param1).send().await?.text().await?;
-            let (bvid, cid, title, _artist) = self.get_page_info(&resp, page).await?;
+            let (bvid, cid, title, _artist) = self.get_page_info(&resp).await?;
             // println!("{} {} {} {}", &bvid, &cid, &title, &artist);
             // let re = Regex::new(r"window.__playinfo__\s*=\s*(\{.+?\})\s*</script>").unwrap();
             // let j: serde_json::Value =

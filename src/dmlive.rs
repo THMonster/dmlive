@@ -175,7 +175,8 @@ impl DMLive {
         let mut stream_info = self.sf.run().await?;
         self.ctx.cm.set_stream_type(&stream_info);
         *self.ctx.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
-        self.dm.set_bili_video_cid(stream_info.get("bili_cid").unwrap_or(&"".to_string())).await;
+        self.ctx.cm.bvideo_info.borrow_mut().current_cid = stream_info.remove("bili_cid").unwrap_or("".to_string());
+        // self.dm.set_bili_video_cid(stream_info.get("bili_cid").unwrap_or(&"".to_string())).await;
         let ff_task = async {
             self.fc.run(&stream_info).await?;
             anyhow::Ok(())
@@ -197,7 +198,8 @@ impl DMLive {
         let mut stream_info = self.sf.run().await?;
         self.ctx.cm.set_stream_type(&stream_info);
         *self.ctx.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
-        self.dm.set_bili_video_cid(stream_info.get("bili_cid").unwrap_or(&"".to_string())).await;
+        self.ctx.cm.bvideo_info.borrow_mut().current_cid = stream_info.remove("bili_cid").unwrap_or("".to_string());
+        // self.dm.set_bili_video_cid(stream_info.get("bili_cid").unwrap_or(&"".to_string())).await;
         self.mc.reload_edl_video(&stream_info).await?;
         Ok(())
     }
@@ -205,7 +207,8 @@ impl DMLive {
     pub async fn download_danmaku(&self) -> anyhow::Result<()> {
         let mut stream_info = self.sf.run().await?;
         *self.ctx.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
-        self.dm.set_bili_video_cid(stream_info.get("bili_cid").unwrap_or(&"".to_string())).await;
+        self.ctx.cm.bvideo_info.borrow_mut().current_cid = stream_info.remove("bili_cid").unwrap_or("".to_string());
+        // self.dm.set_bili_video_cid(stream_info.get("bili_cid").unwrap_or(&"".to_string())).await;
         let ff_task = async {
             self.fc.write_danmaku_only_task().await?;
             anyhow::Ok(())

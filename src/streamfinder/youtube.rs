@@ -1,9 +1,9 @@
 use log::{debug, info};
 use regex::Regex;
 use reqwest::Client;
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
-use crate::{dmlerr, utils};
+use crate::{dmlerr, dmlive::DMLContext, utils};
 
 pub async fn get_live_info(
     client: &Client, room_url: &str,
@@ -57,11 +57,13 @@ pub async fn get_live_info(
     ))
 }
 
-pub struct Youtube {}
+pub struct Youtube {
+    ctx: Rc<DMLContext>,
+}
 
 impl Youtube {
-    pub fn new() -> Self {
-        Youtube {}
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
+        Youtube { ctx }
     }
 
     #[allow(dead_code)]
@@ -163,24 +165,12 @@ impl Youtube {
         }
     }
 
-    pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<&'static str, String>> {
+    pub async fn get_live(&self) -> anyhow::Result<HashMap<&'static str, String>> {
         let client = reqwest::Client::builder()
             .user_agent(utils::gen_ua())
             .timeout(tokio::time::Duration::from_secs(10))
             .build()?;
-        let url = url::Url::parse(room_url)?;
-        let room_url = if url.as_str().contains("youtube.com/@") {
-            let cid = url
-                .path_segments()
-                .and_then(|x| x.last().and_then(|x| x.strip_prefix("@")))
-                .ok_or_else(|| dmlerr!())?;
-            format!("https://www.youtube.com/@{cid}/live")
-        } else {
-            let vid = url.query_pairs().find(|q| q.0.eq("v")).unwrap().1;
-            format!("https://www.youtube.com/watch?v={vid}")
-        };
-
-        let room_info = get_live_info(&client, &room_url).await?;
+        let room_info = get_live_info(&client, &self.ctx.cm.room_url).await?;
         info!("{room_info:?}");
         room_info.3.then(|| 0).ok_or_else(|| dmlerr!())?;
 
@@ -188,7 +178,6 @@ impl Youtube {
         let mut ret = Self::decode_mpd(&client, &room_info.5).await?;
 
         ret.insert("title", format!("{} - {}", room_info.1, room_info.0));
-        ret.insert("room_url", room_url);
         Ok(ret)
     }
 }

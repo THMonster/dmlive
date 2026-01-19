@@ -1,10 +1,10 @@
 // refer to https://github.com/SeaHOH/ykdl
 use chrono::prelude::*;
 use log::info;
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 use uuid::Uuid;
 
-use crate::dmlerr;
+use crate::{dmlerr, dmlive::DMLContext};
 
 const DOUYU_API1: &'static str = "https://www.douyu.com/betard/";
 const DOUYU_API2: &'static str = "https://www.douyu.com/swf_api/homeH5Enc?rids=";
@@ -33,16 +33,18 @@ pub async fn get_live_info(client: &reqwest::Client, rid: &str) -> anyhow::Resul
     ))
 }
 
-pub struct Douyu {}
+pub struct Douyu {
+    ctx: Rc<DMLContext>,
+}
+
 impl Douyu {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
+        Self { ctx }
     }
 
-    pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<&'static str, String>> {
+    pub async fn get_live(&self) -> anyhow::Result<HashMap<&'static str, String>> {
         let mut ret = HashMap::new();
-        let rid =
-            url::Url::parse(room_url)?.path_segments().and_then(|x| x.last()).ok_or_else(|| dmlerr!())?.to_string();
+        let rid = self.ctx.cm.room_id.as_str();
         let client = reqwest::Client::new();
 
         let resp = client
@@ -96,7 +98,7 @@ impl Douyu {
             ),
         );
 
-        let room_info = get_live_info(&client, &rid).await?;
+        let room_info = get_live_info(&client, rid).await?;
         ret.insert("title", format!("{} - {}", room_info.1, room_info.0));
 
         Ok(ret)
