@@ -1,8 +1,8 @@
-pub mod config;
+pub mod config_file;
 
 use crate::utils::is_android;
 use clap::Parser;
-use config::{BVideoInfo, BVideoType, Config};
+use config_file::{BVideoInfo, BVideoType, Config};
 use reqwest::Url;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -96,8 +96,9 @@ pub struct ConfigManager {
     pub font_scale: Cell<f64>,
     pub font_alpha: Cell<f64>,
     pub danmaku_speed: Cell<u64>,
-    pub display_fps: Cell<(u64, u64)>,
+    pub display_fps: Cell<(f64, u64)>,
     pub room_url: String,
+    pub room_id: String,
     pub http_address: Option<String>,
     pub run_mode: RunMode,
     pub record_mode: RecordMode,
@@ -106,65 +107,35 @@ pub struct ConfigManager {
     pub stream_type: Cell<StreamType>,
     pub bvideo_info: RefCell<BVideoInfo>,
     pub title: RefCell<String>,
+    // owner_name: nickname of video/stream's owner;
+    // title: title of video/stream
+    // url/url_v/url_a: real url of video/stream
+    // cover: cover image of video/stream
+    pub stream_info: RefCell<HashMap<&'static str, String>>,
     on_writing: Cell<bool>,
 }
 
 impl ConfigManager {
     pub fn new(config_path: impl AsRef<Path>, args: &Args) -> Self {
         let mut plat = Platform::Linux;
+
         if args.tcp {
             plat = Platform::LinuxTcp;
         }
-        let mut bvinfo = BVideoInfo {
-            base_url: "".into(),
+
+        let bvinfo = BVideoInfo {
+            base_url: "".to_string(),
             video_type: BVideoType::Video,
             current_page: 0,
+            last_page: usize::MAX,
+            current_cid: "".to_string(),
             plist: Vec::new(),
         };
+
         let c = std::fs::read(config_path).unwrap();
         let c = String::from_utf8_lossy(&c);
-        let c = config::load_config(&c).unwrap();
-        let room_url = args.url.clone();
-        let mut site_type = SiteType::Live;
-        let site = if room_url.contains("live.bilibili.com/") {
-            Site::BiliLive
-        } else if room_url.contains("bilibili.com/") {
-            let u = Url::parse(&room_url).unwrap();
-            for q in u.query_pairs() {
-                if q.0.eq("p") {
-                    bvinfo.current_page = q.1.parse().unwrap();
-                }
-            }
-            let vid = u.path_segments().unwrap().filter(|x| !x.is_empty()).last().unwrap().to_string();
-            if vid.starts_with("BV") || vid.starts_with("av") {
-                bvinfo.video_type = BVideoType::Video;
-                bvinfo.base_url.push_str(format!("https://www.bilibili.com/video/{}", vid).as_str());
-            } else {
-                bvinfo.video_type = BVideoType::Bangumi;
-                bvinfo.base_url.push_str(format!("https://www.bilibili.com/bangumi/play/{}", vid).as_str());
-            }
-            site_type = SiteType::Video;
-            Site::BiliVideo
-        } else if room_url.contains("ani.gamer.com.tw/") {
-            let u = Url::parse(&room_url).unwrap();
-            for q in u.query_pairs() {
-                if q.0.eq("p") {
-                    bvinfo.current_page = q.1.parse().unwrap();
-                }
-            }
-            site_type = SiteType::Video;
-            Site::BahaVideo
-        } else if room_url.contains("douyu.com/") {
-            Site::DouyuLive
-        } else if room_url.contains("huya.com/") {
-            Site::HuyaLive
-        } else if room_url.contains("twitch.tv/") {
-            Site::TwitchLive
-        } else if room_url.contains("youtube.com/") {
-            Site::YoutubeLive
-        } else {
-            panic!("unknown url")
-        };
+        let c = config_file::load_config(&c).unwrap();
+
         let run_mode = if args.record || args.http_address.is_some() || args.download_dm {
             RunMode::Record
         } else {
@@ -175,13 +146,15 @@ impl ConfigManager {
         } else {
             RecordMode::All
         };
+
         Self {
-            room_url: room_url.replace("dmlive://", "https://"),
+            room_url: args.url.replace("dmlive://", "https://"),
+            room_id: "".to_string(),
             stream_type: Cell::new(StreamType::FLV),
             run_mode,
             record_mode,
-            site,
-            site_type,
+            site: Site::BiliLive,
+            site_type: SiteType::Live,
             font_scale: Cell::new(c.font_scale.unwrap_or(1.0)),
             font_alpha: Cell::new(c.font_alpha.unwrap_or(0.0)),
             danmaku_speed: Cell::new(c.danmaku_speed.unwrap_or(8000)),
@@ -194,26 +167,28 @@ impl ConfigManager {
             on_writing: Cell::new(false),
             plat,
             cookies_from_browser: c.cookies_from_browser.unwrap_or_else(|| "".into()),
-            display_fps: Cell::new((60, 0)),
+            display_fps: Cell::new((60.0, 0)),
             title: RefCell::new("".to_string()),
+            stream_info: RefCell::new(HashMap::new()),
         }
     }
 
-    pub async fn init(&mut self) -> anyhow::Result<()> {
+    pub async fn init(&mut self) -> () {
         if is_android().await {
             self.plat = Platform::Android;
         }
-        Ok(())
+        self.parse_url();
     }
 
-    pub fn set_stream_type(&self, stream_info: &HashMap<&str, String>) {
-        if stream_info["url"].contains(".m3u8") {
+    pub fn set_stream_type(&self) {
+        let si = self.stream_info.borrow();
+        if si["url"].contains(".m3u8") {
             if self.site == Site::BiliLive {
                 self.stream_type.set(StreamType::HLS(1)); // for m4s inside
             } else {
                 self.stream_type.set(StreamType::HLS(0)); // for ts inside
             }
-        } else if stream_info["url"].contains(".flv") {
+        } else if si["url"].contains(".flv") {
             self.stream_type.set(StreamType::FLV);
         } else {
             self.stream_type.set(StreamType::DASH);
@@ -251,5 +226,61 @@ impl ConfigManager {
             self.on_writing.set(false);
         }
         Ok(())
+    }
+
+    pub fn parse_url(&mut self) {
+        let u = Url::parse(&self.room_url).unwrap();
+        self.room_id = u.path_segments().unwrap().rfind(|x| !x.is_empty()).unwrap().to_string();
+        if self.room_url.contains("live.bilibili.com/") {
+            self.site = Site::BiliLive;
+            self.room_url = format!("https://live.bilibili.com/{}", self.room_id);
+        } else if self.room_url.contains("bilibili.com/") {
+            for q in u.query_pairs() {
+                if q.0.eq("p") {
+                    self.bvideo_info.borrow_mut().current_page = q.1.parse().unwrap();
+                }
+            }
+            if self.room_id.starts_with("BV") || self.room_id.starts_with("av") {
+                self.bvideo_info.borrow_mut().video_type = BVideoType::Video;
+                self.bvideo_info.borrow_mut().base_url = format!("https://www.bilibili.com/video/{}", self.room_id);
+            } else {
+                self.bvideo_info.borrow_mut().video_type = BVideoType::Bangumi;
+                self.bvideo_info.borrow_mut().base_url =
+                    format!("https://www.bilibili.com/bangumi/play/{}", self.room_id);
+            }
+            self.site_type = SiteType::Video;
+            self.site = Site::BiliVideo;
+        } else if self.room_url.contains("ani.gamer.com.tw/") {
+            for q in u.query_pairs() {
+                if q.0.eq("sn") {
+                    self.room_id = q.1.to_string();
+                } else if q.0.eq("p") {
+                    self.bvideo_info.borrow_mut().current_page = q.1.parse().unwrap();
+                }
+            }
+            self.site_type = SiteType::Video;
+            self.site = Site::BahaVideo;
+        } else if self.room_url.contains("douyu.com/") {
+            self.site = Site::DouyuLive;
+            self.room_url = format!("https://www.douyu.com/{}", self.room_id);
+        } else if self.room_url.contains("huya.com/") {
+            self.site = Site::HuyaLive;
+            self.room_url = format!("https://www.huya.com/{}", self.room_id);
+        } else if self.room_url.contains("twitch.tv/") {
+            self.site = Site::TwitchLive;
+            self.room_url = format!("https://www.twtich.tv/{}", self.room_id);
+        } else if self.room_url.contains("youtube.com/") {
+            self.site = Site::YoutubeLive;
+            if self.room_url.contains("youtube.com/@") {
+                self.room_id =
+                    u.path_segments().unwrap().rfind(|x| !x.is_empty()).unwrap().strip_prefix("@").unwrap().to_string();
+                self.room_url = format!("https://www.youtube.com/@{}/live", self.room_id);
+            } else {
+                self.room_id = u.query_pairs().find(|q| q.0.eq("v")).unwrap().1.to_string();
+                self.room_url = format!("https://www.youtube.com/watch?v={}", self.room_id);
+            };
+        } else {
+            panic!("unknown url")
+        };
     }
 }

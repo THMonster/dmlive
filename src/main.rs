@@ -35,12 +35,9 @@ fn main() {
             let _ = tokio::fs::File::create(&config_path).await;
         }
         let mut cm = ConfigManager::new(config_path, &args);
-        cm.init().await.unwrap();
-        let cm = Rc::new(cm);
-        let mut im = dmlive::ipcmanager::IPCManager::new(cm.clone());
-        im.run().await.unwrap();
-        let im = Rc::new(im);
-        let (mtx, mrx) = async_channel::unbounded();
+        cm.init().await;
+        let im = dmlive::ipcmanager::IPCManager::new();
+        let (mtx, mrx) = dmlive::utils::dmlch::channel();
         let ctx = dmlive::dmlive::DMLContext { im, cm, mrx, mtx };
         let dml = dmlive::dmlive::DMLive::new(Rc::new(ctx)).await;
         dml.run().await;

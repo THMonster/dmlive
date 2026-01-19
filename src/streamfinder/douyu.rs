@@ -1,14 +1,14 @@
 // refer to https://github.com/SeaHOH/ykdl
 use chrono::prelude::*;
 use log::info;
-use std::collections::HashMap;
+use std::rc::Rc;
 use uuid::Uuid;
 
-use crate::dmlerr;
+use crate::{dmlerr, dmlive::DMLContext};
 
-const DOUYU_API1: &'static str = "https://www.douyu.com/betard/";
-const DOUYU_API2: &'static str = "https://www.douyu.com/swf_api/homeH5Enc?rids=";
-const DOUYU_API3: &'static str = "https://www.douyu.com/lapi/live/getH5Play/";
+const DOUYU_API1: &str = "https://www.douyu.com/betard/";
+const DOUYU_API2: &str = "https://www.douyu.com/swf_api/homeH5Enc?rids=";
+const DOUYU_API3: &str = "https://www.douyu.com/lapi/live/getH5Play/";
 
 pub async fn get_live_info(client: &reqwest::Client, rid: &str) -> anyhow::Result<(String, String, String, bool)> {
     let j = client
@@ -29,20 +29,21 @@ pub async fn get_live_info(client: &reqwest::Client, rid: &str) -> anyhow::Resul
         owner.to_string(),
         title.to_string(),
         cover.to_string(),
-        if is_living == 1 && is_living2 == 0 { true } else { false },
+        is_living == 1 && is_living2 == 0,
     ))
 }
 
-pub struct Douyu {}
+pub struct Douyu {
+    ctx: Rc<DMLContext>,
+}
+
 impl Douyu {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
+        Self { ctx }
     }
 
-    pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<&'static str, String>> {
-        let mut ret = HashMap::new();
-        let rid =
-            url::Url::parse(room_url)?.path_segments().and_then(|x| x.last()).ok_or_else(|| dmlerr!())?.to_string();
+    pub async fn get_live(&self) -> anyhow::Result<()> {
+        let rid = self.ctx.cm.room_id.as_str();
         let client = reqwest::Client::new();
 
         let resp = client
@@ -61,15 +62,17 @@ impl Douyu {
         let rt = rquickjs::Runtime::new()?;
         let ctx = rquickjs::Context::full(&rt)?;
         let enc_data = ctx.with(|ctx| -> rquickjs::Result<String> {
-            let _ = ctx.eval::<(), _>(crypto_js)?;
-            let _ = ctx.eval::<(), _>(js_enc)?;
+            ctx.eval::<(), _>(crypto_js)?;
+            ctx.eval::<(), _>(js_enc)?;
             let enc_data = ctx.eval::<String, _>(format!("ub98484234('{rid}','{did}','{tsec}')"))?;
             Ok(enc_data)
         })?;
         info!("{enc_data}");
         let mut param1 = Vec::new();
         enc_data.split('&').for_each(|x| {
-            x.split_once('=').map(|x| param1.push(x));
+            if let Some(x) = x.split_once('=') {
+                param1.push(x)
+            }
         });
         param1.push(("cdn", ""));
         param1.push(("iar", "0"));
@@ -78,7 +81,7 @@ impl Douyu {
         // println!("{:?}", &param1);
 
         let resp = client
-            .post(format!("{}{}", DOUYU_API3, &rid))
+            .post(format!("{DOUYU_API3}{rid}"))
             .header("User-Agent", crate::utils::gen_ua())
             .header("Referer", format!("https://www.douyu.com/{rid}"))
             .form(&param1)
@@ -87,7 +90,11 @@ impl Douyu {
             .json::<serde_json::Value>()
             .await?;
         // println!("{:?}", &resp);
-        ret.insert(
+
+        let room_info = get_live_info(&client, rid).await?;
+
+        let mut si = self.ctx.cm.stream_info.borrow_mut();
+        si.insert(
             "url",
             format!(
                 "{}/{}",
@@ -95,10 +102,10 @@ impl Douyu {
                 resp.pointer("/data/rtmp_live").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?
             ),
         );
-
-        let room_info = get_live_info(&client, &rid).await?;
-        ret.insert("title", format!("{} - {}", room_info.1, room_info.0));
-
-        Ok(ret)
+        si.insert("owner_name", room_info.0);
+        si.insert("title", room_info.1);
+        si.insert("cover", room_info.2);
+        // log::warn!("{:?}", resp);
+        Ok(())
     }
 }

@@ -10,10 +10,8 @@ use anyhow::Result;
 use anyhow::anyhow;
 use log::info;
 use log::warn;
-use std::collections::HashMap;
 use std::rc::Rc;
 
-#[allow(unused)]
 pub struct StreamFinder {
     ctx: Rc<DMLContext>,
 }
@@ -23,49 +21,42 @@ impl StreamFinder {
         Self { ctx }
     }
 
-    // pub async fn run_bilivideo(&self, page: usize) -> Result<(String, Vec<String>)> {
-    //     let b = bilibili::Bilibili::new(self.cm.clone());
-    //     let mut u = b.get_video(page).await?;
-    //     Ok((u.remove(0), u))
-    // }
-
-    pub async fn run(&self) -> Result<HashMap<&str, String>> {
+    pub async fn run(&self) -> Result<()> {
         loop {
             for _ in 0..20 {
-                let stream_info = match self.ctx.cm.site {
+                let res = match self.ctx.cm.site {
                     crate::config::Site::BiliLive => {
                         let b = bilibili::Bilibili::new(self.ctx.clone());
-                        b.get_live(&self.ctx.cm.room_url).await
+                        b.get_live().await
                     }
                     crate::config::Site::BiliVideo => {
                         let b = bilibili::Bilibili::new(self.ctx.clone());
-                        let p = self.ctx.cm.bvideo_info.borrow().current_page;
-                        b.get_video(p).await
+                        b.get_video().await
                     }
                     crate::config::Site::DouyuLive => {
-                        let b = douyu::Douyu::new();
-                        b.get_live(&self.ctx.cm.room_url).await
+                        let b = douyu::Douyu::new(self.ctx.clone());
+                        b.get_live().await
                     }
                     crate::config::Site::HuyaLive => {
-                        let b = huya::Huya::new();
-                        b.get_live(&self.ctx.cm.room_url).await
+                        let b = huya::Huya::new(self.ctx.clone());
+                        b.get_live().await
                     }
                     crate::config::Site::TwitchLive => {
-                        let b = twitch::Twitch::new();
-                        b.get_live(&self.ctx.cm.room_url).await
+                        let b = twitch::Twitch::new(self.ctx.clone());
+                        b.get_live().await
                     }
                     crate::config::Site::YoutubeLive => {
-                        let b = youtube::Youtube::new();
-                        b.get_live(&self.ctx.cm.room_url).await
+                        let b = youtube::Youtube::new(self.ctx.clone());
+                        b.get_live().await
                     }
                     crate::config::Site::BahaVideo => {
                         let b = baha::Baha::new(self.ctx.clone());
                         b.get_video().await
                     }
                 };
-                match stream_info {
-                    Ok(it) => {
-                        return Ok(it);
+                match res {
+                    Ok(_) => {
+                        return Ok(());
                     }
                     Err(e) => {
                         info!("{}", e);

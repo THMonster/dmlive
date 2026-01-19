@@ -9,5 +9,5 @@ pub mod ipcmanager;
 mod mpv;
 mod streamer;
 pub mod streamfinder;
-mod utils;
+pub mod utils;
 

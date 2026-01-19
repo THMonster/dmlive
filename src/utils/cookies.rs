@@ -1,6 +1,7 @@
 use std::{fs::DirEntry, time::SystemTime};
 
-use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
+// use aes::cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
+use aes::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
 use log::info;
 use sqlx::sqlite::SqlitePoolOptions;
 use tokio::process::Command;
@@ -26,7 +27,7 @@ async fn get_kwallet_password(browser: &str) -> anyhow::Result<[u8; 16]> {
         return Err(anyhow::anyhow!("unknown browser"));
     };
     let dbus_send_cmd = Command::new("dbus-send")
-        .args(&[
+        .args([
             "--session",
             "--print-reply=literal",
             "--dest=org.kde.kwalletd5",
@@ -38,7 +39,7 @@ async fn get_kwallet_password(browser: &str) -> anyhow::Result<[u8; 16]> {
     let wallet_name = String::from_utf8_lossy(&dbus_send_cmd.stdout).trim().to_string();
     info!("found wallet name: {}", &wallet_name);
     let kwallet_cmd = Command::new("kwallet-query")
-        .args(&[
+        .args([
             "--read-password",
             format!("{} Safe Storage", &browser_keyring_name).as_str(),
             "--folder",
@@ -69,7 +70,7 @@ fn decrypt_chrome_cookie(data: &mut [u8], key: &[u8; 16]) -> anyhow::Result<Stri
             type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
             let mut buf = data.get(3..).unwrap().to_owned();
             let pt = Aes128CbcDec::new(key.into(), &[32u8; 16].into())
-                .decrypt_padded_mut::<Pkcs7>(&mut buf)
+                .decrypt_padded::<Pkcs7>(&mut buf)
                 .map_err(|_| anyhow::anyhow!("decryption failed"))?;
             return Ok(String::from_utf8_lossy(pt.get(32..).unwrap_or(b"")).into());
         } else {
@@ -104,19 +105,16 @@ async fn get_chrome_cookies(host: &str, is_chromium: bool) -> anyhow::Result<Str
         .max_connections(1)
         .connect(&format!("sqlite:{}", cookie_path.to_string_lossy()))
         .await?;
-    let mut cookies = sqlx::query_as::<_, ChromeCookie>(
-        format!(
-            "
+    let sql = format!(
+        "
 SELECT name, value, encrypted_value 
 FROM cookies
-WHERE host_key LIKE '{}'
-        ",
-            host
-        )
-        .as_str(),
-    )
-    .fetch_all(&pool) // -> Vec<Country>
-    .await?;
+WHERE host_key LIKE '{}'",
+        host
+    );
+    let mut cookies = sqlx::query_as::<_, ChromeCookie>(&sql)
+        .fetch_all(&pool) // -> Vec<Country>
+        .await?;
     info!("encrypted_cookies: {:?}", &cookies);
     let mut ret: String = "".into();
     for it in cookies.iter_mut() {
@@ -148,11 +146,7 @@ async fn get_firefox_cookies(host: &str) -> anyhow::Result<String> {
             };
             if let Ok(x) = x {
                 info!("{:?}", &x);
-                if let Ok(st) = t(x) {
-                    st
-                } else {
-                    SystemTime::UNIX_EPOCH
-                }
+                if let Ok(st) = t(x) { st } else { SystemTime::UNIX_EPOCH }
             } else {
                 SystemTime::UNIX_EPOCH
             }

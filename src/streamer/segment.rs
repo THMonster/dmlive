@@ -2,7 +2,8 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
 };
-use tokio::sync::mpsc::{Receiver, Sender};
+
+use crate::utils::dmlch::{self, Receiver, Sender};
 
 #[allow(unused)]
 #[derive(Debug, Clone)]
@@ -18,23 +19,23 @@ pub struct SegmentStream {
     pub refresh_itvl: Cell<u64>, // in ms
     clips: RefCell<VecDeque<(MediaSegment, bool)>>,
     clip_tx: Sender<MediaSegment>, // clip, is_skip
-    pub clip_rx: RefCell<Receiver<MediaSegment>>,
+    pub clip_rx: Receiver<MediaSegment>,
     refresh_tx: Sender<bool>,
-    pub refresh_rx: RefCell<Receiver<bool>>,
+    pub refresh_rx: Receiver<bool>,
 }
 
 impl SegmentStream {
     pub fn new() -> Self {
-        let (tx, rx) = tokio::sync::mpsc::channel(100);
-        let (tx1, rx1) = tokio::sync::mpsc::channel(10);
+        let (tx, rx) = dmlch::channel();
+        let (tx1, rx1) = dmlch::channel();
         Self {
             sequence: Cell::new(0),
             refresh_itvl: Cell::new(1000),
             clips: RefCell::new(VecDeque::new()),
             clip_tx: tx,
-            clip_rx: RefCell::new(rx),
+            clip_rx: rx,
             refresh_tx: tx1,
-            refresh_rx: RefCell::new(rx1),
+            refresh_rx: rx1,
         }
     }
 
@@ -59,19 +60,19 @@ impl SegmentStream {
 
         let len = old_clips.len();
         for (i, c) in old_clips.iter_mut().enumerate() {
-            if c.1 == false {
+            if !c.1 {
                 let mut clip = c.0.clone();
                 c.1 = true;
-                if first_update == false {
-                    self.clip_tx.send(clip).await?;
+                if !first_update {
+                    self.clip_tx.send(clip)?;
                 } else {
                     if i >= len - 1 {
-                        self.clip_tx.send(clip).await?;
+                        self.clip_tx.send(clip)?;
                     } else {
                         if clip.skip == 0 {
                             clip.skip = 2;
                         }
-                        self.clip_tx.send(clip).await?;
+                        self.clip_tx.send(clip)?;
                     }
                 }
             }
@@ -93,7 +94,7 @@ impl SegmentStream {
                 //     last_sq,
                 //     self.sequence.get()
                 // );
-                self.refresh_tx.send(true).await?;
+                self.refresh_tx.send(true)?;
                 interval.tick().await;
                 if last_sq == self.sequence.get() {
                     state = 1;

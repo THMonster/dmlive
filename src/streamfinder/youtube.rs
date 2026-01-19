@@ -1,13 +1,15 @@
 use log::{debug, info};
-use regex::Regex;
+use regex_lite::Regex;
 use reqwest::Client;
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
-use crate::{dmlerr, utils};
+use crate::{dmlerr, dmlive::DMLContext, utils};
+
+const YTB_API1: &str = "https://www.youtube.com/youtubei/v1/player";
 
 pub async fn get_live_info(
     client: &Client, room_url: &str,
-) -> anyhow::Result<(String, String, String, bool, String, String)> {
+) -> anyhow::Result<(String, String, String, bool, String, String, String)> {
     let resp = client
         .get(room_url)
         .header("Accept-Language", "en-US")
@@ -20,8 +22,11 @@ pub async fn get_live_info(
 
     let re_cover = Regex::new(r#"link\s+rel="image_src"\s+href="([^"]+)""#).unwrap();
     let re_owner = Regex::new(r#"meta\s+property="og:title"\s+content="([^"]+)""#).unwrap();
+    let re_cid_new = Regex::new(r#"link\s+rel="alternate"[^>]+href="([^"]+)""#).unwrap();
     let avatar = re_cover.captures(&resp).and_then(|x| x.get(1)).map(|x| x.as_str());
     let owner = re_owner.captures(&resp).and_then(|x| x.get(1)).map(|x| x.as_str());
+    let cid_new =
+        re_cid_new.captures(&resp).and_then(|x| x.get(1)?.as_str().split('/').find_map(|x| x.strip_prefix("@")));
 
     let re = Regex::new(r"ytInitialPlayerResponse\s*=\s*(\{.+?\});.*?</script>").unwrap();
     let j: Option<serde_json::Value> =
@@ -33,35 +38,38 @@ pub async fn get_live_info(
         .and_then(|x| x.pointer("/videoDetails/thumbnail/thumbnails")?.as_array()?.last()?.pointer("/url")?.as_str())
         .or(avatar)
         .ok_or_else(|| dmlerr!())?;
-    let cid = j
+    let vid = j.and_then(|x| x.pointer("/videoDetails/videoId")?.as_str()).unwrap_or("");
+    let cid = j.and_then(|x| x.pointer("/videoDetails/channelId")?.as_str()).unwrap_or("");
+    let cid_new = j
         .and_then(|x| {
             x.pointer("/microformat/playerMicroformatRenderer/ownerProfileUrl")?
                 .as_str()?
                 .split('/')
-                .last()?
+                .next_back()?
                 .strip_prefix("@")
         })
-        .unwrap_or("");
+        .or(cid_new)
+        .ok_or_else(|| dmlerr!())?;
     let is_live = j.and_then(|x| x.pointer("/videoDetails/isLive")?.as_bool()).unwrap_or(false);
-
-    let mpd_url = j.and_then(|x| x.pointer("/streamingData/dashManifestUrl")?.as_str()).unwrap_or("");
-    // let hls_url = j.pointer("/streamingData/hlsManifestUrl").ok_or_else(|| dmlerr!())?.as_str().unwrap();
 
     Ok((
         owner.to_string(),
         title.to_string(),
         cover.to_string(),
         is_live,
+        cid_new.to_string(),
+        vid.to_string(),
         cid.to_string(),
-        mpd_url.to_string(),
     ))
 }
 
-pub struct Youtube {}
+pub struct Youtube {
+    ctx: Rc<DMLContext>,
+}
 
 impl Youtube {
-    pub fn new() -> Self {
-        Youtube {}
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
+        Youtube { ctx }
     }
 
     #[allow(dead_code)]
@@ -100,8 +108,8 @@ impl Youtube {
                     }
                 }
             }
-            if url.is_some() {
-                video_base_url.push(url.unwrap());
+            if let Some(x) = url {
+                video_base_url.push(x);
             }
         }
         let elem_a = doc
@@ -127,15 +135,20 @@ impl Youtube {
             }
         }
 
-        if !video_base_url.is_empty() && audio_base_url.is_some() {
-            ret.insert("url", video_base_url.last().unwrap().to_string());
-            ret.insert("url_v", video_base_url.last().unwrap().to_string());
-            ret.insert("url_a", audio_base_url.unwrap().to_string());
-            ret.insert("sq", sq.to_string());
-            Ok(ret)
-        } else {
-            Err(anyhow::anyhow!("no dash url found"))
-        }
+        ret.insert(
+            "url",
+            video_base_url.last().ok_or_else(|| dmlerr!())?.to_string(),
+        );
+        ret.insert(
+            "url_v",
+            video_base_url.last().ok_or_else(|| dmlerr!())?.to_string(),
+        );
+        ret.insert(
+            "url_a",
+            audio_base_url.ok_or_else(|| dmlerr!())?.to_string(),
+        );
+        ret.insert("sq", sq.to_string());
+        Ok(ret)
     }
 
     #[allow(dead_code)]
@@ -163,32 +176,45 @@ impl Youtube {
         }
     }
 
-    pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<&'static str, String>> {
+    pub async fn get_live(&self) -> anyhow::Result<()> {
         let client = reqwest::Client::builder()
             .user_agent(utils::gen_ua())
             .timeout(tokio::time::Duration::from_secs(10))
             .build()?;
-        let url = url::Url::parse(room_url)?;
-        let room_url = if url.as_str().contains("youtube.com/@") {
-            let cid = url
-                .path_segments()
-                .and_then(|x| x.last().and_then(|x| x.strip_prefix("@")))
-                .ok_or_else(|| dmlerr!())?;
-            format!("https://www.youtube.com/@{cid}/live")
-        } else {
-            let vid = url.query_pairs().find(|q| q.0.eq("v")).unwrap().1;
-            format!("https://www.youtube.com/watch?v={vid}")
-        };
-
-        let room_info = get_live_info(&client, &room_url).await?;
+        let room_info = get_live_info(&client, &self.ctx.cm.room_url).await?;
         info!("{room_info:?}");
-        room_info.3.then(|| 0).ok_or_else(|| dmlerr!())?;
+        room_info.3.then_some(0).ok_or_else(|| dmlerr!())?;
 
-        // let urls = self.decode_m3u8(&client, &hls_url).await?;
-        let mut ret = Self::decode_mpd(&client, &room_info.5).await?;
+        let vid = room_info.5.as_str();
+        let payload = format!(
+            r#"{{"videoId": "{vid}", "contentCheckOk": true, "racyCheckOk": true, "context": {{ "client": {{ "clientName": "ANDROID", "clientVersion": "19.45.36", "platform": "DESKTOP",   "clientScreen": "EMBED",   "clientFormFactor": "UNKNOWN_FORM_FACTOR",   "browserName": "Chrome",  }},   "user": {{"lockedSafetyMode": "false"}}, "request": {{"useSsl": "true"}}, }}, }}"#,
+        );
+        let resp = client
+            .post(YTB_API1)
+            .query(&[("key", "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8")])
+            .header("User-Agent", crate::utils::gen_ua())
+            .header("Referer", "https://www.youtube.com")
+            .body(payload)
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
 
-        ret.insert("title", format!("{} - {}", room_info.1, room_info.0));
-        ret.insert("room_url", room_url);
-        Ok(ret)
+        let hls_url =
+            resp.pointer("/streamingData/hlsManifestUrl").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?;
+        // let mpd_url =
+        //     resp.pointer("/streamingData/dashManifestUrl").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?;
+
+        let url = Self::decode_m3u8(&client, hls_url).await?;
+        // let  url = Self::decode_mpd(&client, &mpd_url).await?;
+
+        let mut si = self.ctx.cm.stream_info.borrow_mut();
+        si.insert("url", url);
+        si.insert("owner_name", room_info.0);
+        si.insert("title", room_info.1);
+        si.insert("vid", room_info.5);
+        si.insert("cid", room_info.6);
+        info!("{si:?}");
+        Ok(())
     }
 }

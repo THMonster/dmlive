@@ -1,29 +1,32 @@
 pub mod cmdparser;
-use crate::config::Platform;
-use crate::dmlerr;
-use crate::dmlive::DMLContext;
-use crate::{dmlive::DMLMessage, utils::gen_ua};
+
 use anyhow::Result;
 use futures::StreamExt;
 use log::info;
-use std::cell::Cell;
-use std::collections::HashMap;
 use std::rc::Rc;
+use std::{cell::Cell, os::fd::AsRawFd};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
-    net::UnixStream,
     process::Command,
 };
 
+use crate::{
+    config::Platform,
+    utils::dmlch::{Receiver, Sender},
+};
+use crate::{dmlerr, utils::dmlch};
+use crate::{dmlive::DMLContext, ipcmanager::get_unixsocket_pair};
+use crate::{dmlive::DMLMessage, utils::gen_ua};
+
 pub struct MpvControl {
     last_rpc_ts: Cell<i64>,
-    mpv_command_tx: async_channel::Sender<String>,
-    mpv_command_rx: async_channel::Receiver<String>,
+    mpv_command_tx: Sender<String>,
+    mpv_command_rx: Receiver<String>,
     ctx: Rc<DMLContext>,
 }
 impl MpvControl {
     pub fn new(ctx: Rc<DMLContext>) -> Self {
-        let (tx, rx) = async_channel::unbounded();
+        let (tx, rx) = dmlch::channel();
         Self {
             mpv_command_tx: tx,
             mpv_command_rx: rx,
@@ -32,236 +35,207 @@ impl MpvControl {
         }
     }
 
-    pub async fn create_mpv_command(&self) -> Result<Command> {
+    pub async fn create_mpv_command(&self, ipcfd: i32) -> Result<Command> {
         let mut ret = Command::new("mpv");
         if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
             ret.arg(format!("--user-agent={}", gen_ua()))
                 .arg("--http-header-fields-add=Referer: https://www.bilibili.com/");
         } else {
-            ret.args(&["--cache=yes", "--cache-pause-initial=yes"]);
+            ret.args(["--cache=yes", "--cache-pause-initial=yes"]);
         }
-        ret.args(&[
+        ret.args([
             "--loop=no",
             "--keep-open=no",
             "--idle=yes",
             "--player-operation-mode=pseudo-gui",
-            "--sub=1",
         ])
-        .arg(format!(
-            "--input-ipc-server={}",
-            self.ctx.im.get_mpv_socket_path()
-        ));
+        .arg(format!("--input-ipc-client=fd://{ipcfd}",));
         Ok(ret)
     }
 
-    pub async fn reload_edl_video(&self, stream_info: &HashMap<&str, String>) -> Result<()> {
-        let edl = format!(
-            "edl://!no_clip;!no_chapters;%{0}%{1};!new_stream;!no_clip;!no_chapters;%{2}%{3}",
-            stream_info["url_a"].chars().count(),
-            stream_info["url_a"],
-            stream_info["url_v"].chars().count(),
-            stream_info["url_v"]
-        );
-        info!("load video: {}--{}", &edl, self.ctx.cm.title.borrow());
-        self.mpv_command_tx
-            .send(format!(
-                "{{ \"command\": [\"loadfile\", \"{}\"], \"async\": true }}\n",
-                &edl
-            ))
-            .await?;
-        self.mpv_command_tx
-            .send(format!(
-                "{{ \"command\": [\"set_property\", \"force-media-title\", \"{}\"] }}\n",
-                self.ctx.cm.title.borrow().replace(r#"""#, r#"\""#)
-            ))
-            .await?;
+    pub fn reload_edl_video(&self) -> Result<()> {
+        let edl = {
+            let si = self.ctx.cm.stream_info.borrow();
+            format!(
+                "edl://!no_clip;!no_chapters;%{0}%{1};!new_stream;!no_clip;!no_chapters;%{2}%{3}",
+                si["url_a"].chars().count(),
+                si["url_a"],
+                si["url_v"].chars().count(),
+                si["url_v"]
+            )
+        };
+        info!("load video: {edl}--{}", self.ctx.cm.title.borrow());
+        self.mpv_command_tx.send(r#"{ "command": ["sub-remove", 1], "async": true }"#.to_string())?;
+        self.mpv_command_tx.send(format!(
+            r#"{{ "command": ["loadfile", "{edl}"], "async": true }}"#,
+        ))?;
+        self.mpv_command_tx.send(format!(
+            r#"{{ "command": ["set_property", "force-media-title", "{}"] }}"#,
+            self.ctx.cm.title.borrow().replace(r#"""#, r#"\""#)
+        ))?;
         Ok(())
     }
 
-    pub async fn reload_video(&self) -> Result<()> {
+    pub fn reload_video(&self) -> Result<()> {
         if self.ctx.cm.plat == Platform::Android {
-            Command::new("termux-open").arg(self.ctx.im.get_f2m_socket_path()).spawn()?;
+            let f2mfd = self.ctx.im.get_f2m_socket_mpv();
+            Command::new("ffmpeg")
+                .args(["-y", "-xerror", "-nostdin"])
+                .args(["-hide_banner"])
+                .arg("-i")
+                .arg(format!("pipe:{f2mfd}"))
+                .args(["-c", "copy", "-f", "matroska"])
+                .arg("-listen")
+                .arg("1")
+                .arg("tcp://127.0.0.1:5678")
+                .stdin(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                // .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            Command::new("sh").arg("-c").arg("sleep 0.5; termux-open tcp://127.0.0.1:5678").spawn()?;
         } else {
-            self.mpv_command_tx
-                .send(format!(
-                    "{{ \"command\": [\"loadfile\", \"{}\"] }}\n",
-                    self.ctx.im.get_f2m_socket_path()
-                ))
-                .await?;
+            self.mpv_command_tx.send(format!(
+                r#"{{ "command": ["loadfile", "fd://{}"], "async": true }}"#,
+                self.ctx.im.get_f2m_socket_mpv()
+            ))?;
         }
         Ok(())
     }
 
-    // pub async fn quit(&self) -> Result<()> {
-    //     self.mpv_command_tx.send("{ \"command\": [\"quit\"] }\n".into()).await?;
-    //     Ok(())
-    // }
-
-    pub async fn stop(&self) -> Result<()> {
-        self.mpv_command_tx.send("{ \"command\": [\"stop\"] }\n".into()).await?;
+    pub fn stop(&self) -> Result<()> {
+        self.mpv_command_tx.send(r#"{ "command": [ "stop" ] }"#.to_string())?;
         Ok(())
     }
 
-    pub async fn init_mpv_rpc(&self) -> Result<()> {
-        self.mpv_command_tx
-            .send(
-                r#"{ "command": ["keybind", "alt+r", "script-message dml:r"] }
+    pub fn restart(&self) -> Result<()> {
+        self.mpv_command_tx.send(r#"{ "command": [ "stop" ] }"#.to_string())?;
+        self.ctx.mtx.send(DMLMessage::RequestRestart)?;
+        Ok(())
+    }
+
+    pub fn init_mpv_rpc(&self) -> Result<()> {
+        self.mpv_command_tx.send(
+            r#"{ "command": ["keybind", "alt+r", "script-message dml:r"] }
                 { "command": ["keybind", "alt+z", "script-message dml:fsdown"] }
                 { "command": ["keybind", "alt+x", "script-message dml:fsup"] }
                 { "command": ["keybind", "alt+i", "script-message dml:nick"] }
                 { "command": ["keybind", "alt+b", "script-message dml:back"] }
                 { "command": ["keybind", "alt+n", "script-message dml:next"] }
-                { "command": ["keybind", "alt+f", "script-message dml:fps"] }
-                "#
-                .into(),
-            )
-            .await?;
+                { "command": ["keybind", "alt+f", "script-message dml:fps"] }"#
+                .to_string(),
+        )?;
 
         Ok(())
     }
 
     async fn handle_mpv_event(&self, line: String) -> Result<()> {
         let j: serde_json::Value = serde_json::from_str(&line)?;
-        if let Some(rid) = j.pointer("/request_id") {
-            if rid.as_u64().eq(&Some(114)) {
-                let w = j.pointer("/data/w").ok_or_else(|| dmlerr!())?.as_u64().unwrap();
-                let h = j.pointer("/data/h").ok_or_else(|| dmlerr!())?.as_u64().unwrap();
+        match j.pointer("/request_id").and_then(|x| x.as_u64()) {
+            Some(114) => {
+                let w = j.pointer("/data/w").and_then(|x| x.as_u64()).ok_or_else(|| dmlerr!())?;
+                let h = j.pointer("/data/h").and_then(|x| x.as_u64()).ok_or_else(|| dmlerr!())?;
                 if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
-                    let _ = self.ctx.mtx.send(DMLMessage::SetVideoInfo((w, h, 0))).await;
-                    self.mpv_command_tx
-                        .send(
-                            r#"{ "command": ["sub-remove", "1"], "async": true }
-                              "#
-                            .into(),
-                        )
-                        .await?;
-                    self.mpv_command_tx
-                        .send(format!(
-                            "{{ \"command\": [\"sub-add\", \"{}\"], \"async\": true }}\n",
-                            self.ctx.im.get_danmaku_socket_path()
-                        ))
-                        .await?;
-                }
-            } else if rid.as_u64().eq(&Some(514)) {
-                match j.pointer("/data") {
-                    Some(it) => match it.as_f64() {
-                        Some(it) => {
-                            self.ctx.cm.display_fps.set((it.round() as u64, self.ctx.cm.display_fps.get().1));
-                        }
-                        None => {}
-                    },
-                    None => {}
-                }
-            } else if rid.as_u64().eq(&Some(1919)) {
-                match j.pointer("/data") {
-                    Some(it) => match it.as_f64() {
-                        Some(it) => {
-                            if self.ctx.cm.display_fps.get().1 == 0 && it < 59.0 {
-                                self.mpv_command_tx
-                                    .send(
-                                        r#"{ "command": ["set_property", "vf", "fps=fps=60:round=near"] }
-                                        "#
-                                        .into(),
-                                    )
-                                    .await?;
-                            }
-                        }
-                        None => {}
-                    },
-                    None => {}
+                    self.ctx.mtx.send(DMLMessage::SetVideoInfo(w, h, 0))?;
+                    self.mpv_command_tx.send(format!(
+                        r#"{{ "command": ["sub-add", "tcp://127.0.0.1:{}"], "async": true }}"#,
+                        self.ctx.im.get_danmaku_tcp_port()
+                    ))?;
                 }
             }
-        }
-        let event = j.pointer("/event").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?;
-        if event.eq("end-file") {
-            if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
-                if j.pointer("/reason").ok_or_else(|| dmlerr!())?.as_str().unwrap().eq("eof") {
-                    self.ctx.cm.bvideo_info.borrow_mut().current_page += 1;
-                    let _ = self.ctx.mtx.send(DMLMessage::PlayVideo).await;
+            Some(514) => {
+                if let Some(it) = j.pointer("/data").and_then(|x| x.as_f64()) {
+                    self.ctx.cm.display_fps.set((it, self.ctx.cm.display_fps.get().1));
                 }
-            } else {
-                // tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                // let _ = self.reload_video().await;
+            }
+            Some(1919) => {
+                if let Some(it) = j.pointer("/data").and_then(|x| x.as_f64())
+                    && self.ctx.cm.display_fps.get().1 == 0
+                    && it < 59.0
+                {
+                    self.mpv_command_tx
+                        .send(r#"{ "command": ["set_property", "vf", "fps=fps=60:round=near"] }"#.to_string())?;
+                }
+            }
+            _ => {}
+        }
+        let event = j.pointer("/event").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?;
+        if event.eq("end-file") {
+            info!("{j:?}");
+            if j.pointer("/reason").and_then(|x| x.as_str()).eq(&Some("eof"))
+                && matches!(self.ctx.cm.site, crate::config::Site::BiliVideo)
+            {
+                let mut bvi = self.ctx.cm.bvideo_info.borrow_mut();
+                if bvi.current_page < bvi.last_page {
+                    bvi.current_page += 1;
+                    drop(bvi);
+                    self.ctx.mtx.send(DMLMessage::RequestRestart)?;
+                }
             }
         } else if event.eq("file-loaded") {
             tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-            let _ = self
-                .mpv_command_tx
-                .send(
-                    r#"{ "command": ["get_property", "video-params"], "request_id": 114, "async": true } }
+            self.mpv_command_tx.send(
+                r#"{ "command": ["get_property", "video-params"], "request_id": 114, "async": true }
                     { "command": ["get_property", "display-fps"], "request_id": 514, "async": true }
-                    { "command": ["get_property", "container-fps"], "request_id": 1919, "async": true }
-                    "#
-                    .into(),
-                )
-                .await;
+                    { "command": ["get_property", "container-fps"], "request_id": 1919, "async": true }"#
+                    .to_string(),
+            )?;
         } else if event.eq("client-message") {
             let now = chrono::Utc::now().timestamp_millis();
             if now - self.last_rpc_ts.get() < 1000 {
                 return Ok(());
             }
             self.last_rpc_ts.set(now);
-            let cmds = cmdparser::CmdParser::new(
-                j.pointer("/args/0").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
-            );
+            let cmds =
+                cmdparser::CmdParser::new(j.pointer("/args/0").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?);
             if cmds.restart {
-                if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
-                    let _ = self.ctx.mtx.send(DMLMessage::PlayVideo).await;
-                } else {
-                    self.stop().await?;
-                }
+                self.restart()?;
             }
-            if cmds.fs.is_some() {
-                let _ = self.ctx.mtx.send(DMLMessage::SetFontScale(cmds.fs.unwrap())).await;
+            if let Some(fs) = cmds.fs {
+                self.ctx.mtx.send(DMLMessage::SetFontScale(fs))?;
             } else if cmds.fsup {
-                let _ = self.ctx.mtx.send(DMLMessage::SetFontScale(self.ctx.cm.font_scale.get() + 0.15)).await;
+                self.ctx.mtx.send(DMLMessage::SetFontScale(
+                    self.ctx.cm.font_scale.get() + 0.15,
+                ))?;
             } else if cmds.fsdown {
-                let _ = self.ctx.mtx.send(DMLMessage::SetFontScale(self.ctx.cm.font_scale.get() - 0.15)).await;
+                self.ctx.mtx.send(DMLMessage::SetFontScale(
+                    self.ctx.cm.font_scale.get() - 0.15,
+                ))?;
             }
-            if cmds.fa.is_some() {
-                let _ = self.ctx.mtx.send(DMLMessage::SetFontAlpha(cmds.fa.unwrap())).await;
+            if let Some(fa) = cmds.fa {
+                self.ctx.mtx.send(DMLMessage::SetFontAlpha(fa))?;
             }
-            if cmds.speed.is_some() {
-                let _ = self.ctx.mtx.send(DMLMessage::SetDMSpeed(cmds.speed.unwrap())).await;
+            if let Some(speed) = cmds.speed {
+                self.ctx.mtx.send(DMLMessage::SetDMSpeed(speed))?;
             }
-            if cmds.page.is_some() {
-                self.ctx.cm.bvideo_info.borrow_mut().current_page = cmds.page.unwrap() as usize;
-                let _ = self.ctx.mtx.send(DMLMessage::PlayVideo).await;
+            if let Some(page) = cmds.page {
+                self.ctx.cm.bvideo_info.borrow_mut().current_page = page as usize;
+                self.ctx.mtx.send(DMLMessage::PlayVideo)?;
             }
             if cmds.nick {
-                let _ = self.ctx.mtx.send(DMLMessage::ToggleShowNick).await;
+                self.ctx.mtx.send(DMLMessage::ToggleShowNick)?;
             }
             if cmds.back {
                 let p = self.ctx.cm.bvideo_info.borrow().current_page.saturating_sub(1);
                 self.ctx.cm.bvideo_info.borrow_mut().current_page = if p == 0 { 1 } else { p };
-                let _ = self.ctx.mtx.send(DMLMessage::PlayVideo).await;
+                self.restart()?;
             }
             if cmds.next {
                 self.ctx.cm.bvideo_info.borrow_mut().current_page += 1;
-                let _ = self.ctx.mtx.send(DMLMessage::PlayVideo).await;
+                self.restart()?;
             }
             if cmds.fps {
-                let fps: u64 = {
+                let fps: f64 = {
                     let df = self.ctx.cm.display_fps.get();
                     let i = df.1 as usize % 3;
-                    [df.0, 0u64, 60u64][i]
+                    [df.0, 0.0, 60.0][i]
                 };
-                if fps == 0 {
-                    self.mpv_command_tx
-                        .send(
-                            r#"{ "command": ["set_property", "vf", ""] }
-                            "#
-                            .into(),
-                        )
-                        .await?;
+                if fps == 0.0 {
+                    self.mpv_command_tx.send(r#"{ "command": ["set_property", "vf", ""] }"#.into())?;
                 } else {
-                    self.mpv_command_tx
-                        .send(format!(
-                            r#"{{ "command": ["set_property", "vf", "fps=fps={}:round=near"] }}
-                        "#,
-                            fps
-                        ))
-                        .await?;
+                    self.mpv_command_tx.send(format!(
+                        r#"{{ "command": ["set_property", "vf", "fps=fps={fps}:round=near"] }}"#,
+                    ))?;
                 }
                 let df = self.ctx.cm.display_fps.get();
                 self.ctx.cm.display_fps.set((df.0, df.1.saturating_add(1)));
@@ -271,12 +245,12 @@ impl MpvControl {
     }
 
     pub async fn run_normal(&self) -> Result<()> {
-        let mut mpv = self.create_mpv_command().await?.kill_on_drop(true).spawn().unwrap();
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-        let s = UnixStream::connect(self.ctx.im.get_mpv_socket_path()).await?;
-        let (usocket_read, mut usocket_write) = tokio::io::split(s);
+        let (a, b) = get_unixsocket_pair()?;
+        let mut mpv = self.create_mpv_command(b.as_raw_fd()).await?.kill_on_drop(true).spawn().unwrap();
+        let (usocket_read, mut usocket_write) = tokio::io::split(a);
         let mpv_rpc_write_task = async {
-            while let Ok(s) = self.mpv_command_rx.recv().await {
+            while let Ok(mut s) = self.mpv_command_rx.recv().await {
+                s.push('\n');
                 let _ = usocket_write.write_all(s.as_bytes()).await;
             }
         };
@@ -287,16 +261,16 @@ impl MpvControl {
                 tokio::select! {
                     Some(_) = tasks.next() => {},
                     msg = reader.next_line() => {
-                        match msg {
-                            Ok(it) => { tasks.push(self.handle_mpv_event(it.unwrap_or("".to_string()))); },
-                            Err(_) => { return; },
+                        if let Some(it) = msg? {
+                            tasks.push(self.handle_mpv_event(it));
                         }
                     }
                 }
             }
+            #[allow(unreachable_code)]
+            anyhow::Ok(())
         };
-        let _ = self.init_mpv_rpc().await;
-        // let _ = self.reload_video().await;
+        let _ = self.init_mpv_rpc();
         tokio::select! {
             _ = mpv_rpc_write_task => {},
             _ = mpv_rpc_read_task => {},
@@ -305,32 +279,18 @@ impl MpvControl {
         Ok(())
     }
 
-    pub async fn run_android(&self) -> Result<()> {
-        // Command::new("termux-open").arg(self.ipc_manager.get_f2m_socket_path()).spawn().unwrap();
-        while let Ok(s) = self.mpv_command_rx.recv().await {
-            if s.contains("quit") {
-                break;
-            }
-        }
-        Ok(())
-    }
-
     pub async fn run(&self) -> Result<()> {
-        match self.ctx.cm.run_mode {
-            crate::config::RunMode::Play => {
-                if self.ctx.cm.plat == Platform::Android {
-                    self.run_android().await?;
-                } else {
-                    self.run_normal().await?;
-                }
-            }
-            crate::config::RunMode::Record => {
-                while let Ok(s) = self.mpv_command_rx.recv().await {
-                    if s.contains("quit") {
-                        break;
-                    }
-                }
-            }
+        let mode = match self.ctx.cm.run_mode {
+            crate::config::RunMode::Play => match self.ctx.cm.plat {
+                Platform::Android => 1,
+                _ => 0,
+            },
+            crate::config::RunMode::Record => 1,
+        };
+        if mode == 0 {
+            self.run_normal().await?;
+        } else {
+            std::future::pending::<()>().await;
         }
         Ok(())
     }

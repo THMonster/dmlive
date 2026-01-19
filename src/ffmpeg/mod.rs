@@ -1,32 +1,34 @@
-use crate::config::{RunMode, Site, StreamType};
+use anyhow::{Result, bail};
+use log::info;
+use regex_lite::Regex;
+use std::cell::RefCell;
+use std::os::fd::AsRawFd;
+use std::rc::Rc;
+use std::time::Duration;
+use tokio::io::{AsyncRead, BufReader};
+use tokio::process::Child;
+use tokio::time::timeout;
+use tokio::{io::AsyncBufReadExt, process::Command};
+
+use crate::config::{Site, StreamType};
+use crate::dmlerr;
 use crate::dmlive::DMLContext;
 use crate::dmlive::DMLMessage;
-use anyhow::Result;
-use anyhow::anyhow;
-use log::info;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
-use tokio::io::{AsyncRead, BufReader};
-use tokio::process::ChildStdin;
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt},
-    process::Command,
-};
 
 pub struct FfmpegControl {
     ctx: Rc<DMLContext>,
-    ff_stdin: RefCell<Option<ChildStdin>>,
+    ffchild_record: RefCell<Option<Child>>,
 }
 impl FfmpegControl {
     pub fn new(ctx: Rc<DMLContext>) -> Self {
         Self {
             ctx,
-            ff_stdin: RefCell::new(None),
+            ffchild_record: None.into(),
         }
     }
+
     pub async fn write_danmaku_only_task(&self) -> Result<()> {
-        let in_stream = self.ctx.im.get_danmaku_socket_path();
+        let port = self.ctx.im.get_danmaku_tcp_port();
         let max_len = match self.ctx.cm.title.borrow().char_indices().nth(70) {
             Some(it) => it.0,
             None => self.ctx.cm.title.borrow().len(),
@@ -39,8 +41,7 @@ impl FfmpegControl {
         );
         let mut cmd = Command::new("ffmpeg");
         cmd.args(["-y", "-hide_banner", "-nostdin"]);
-        cmd.arg("-i");
-        cmd.arg(&in_stream);
+        cmd.arg("-i").arg(format!("tcp://127.0.0.1:{port}"));
         cmd.args(["-c", "copy"]);
         cmd.arg(&filename);
         let mut ff = cmd
@@ -54,7 +55,7 @@ impl FfmpegControl {
     }
 
     pub async fn write_record_task(&self) -> Result<()> {
-        let in_stream = self.ctx.im.get_f2m_socket_path();
+        let f2mfd = self.ctx.im.get_f2m_socket_mpv();
         let max_len = match self.ctx.cm.title.borrow().char_indices().nth(70) {
             Some(it) => it.0,
             None => self.ctx.cm.title.borrow().len(),
@@ -66,22 +67,28 @@ impl FfmpegControl {
             now.format("%F %T")
         );
         let mut cmd = Command::new("ffmpeg");
-        cmd.args(["-y", "-hide_banner", "-nostdin"]);
-        cmd.arg("-i");
-        cmd.arg(&in_stream);
+        cmd.args(["-y", "-xerror", "-nostdin"]);
+        cmd.args(["-hide_banner"]);
+        cmd.arg("-i").arg(format!("pipe:{f2mfd}"));
         cmd.args(["-c", "copy", "-f", "matroska"]);
-        cmd.arg(&filename);
-        let mut ff = cmd
+
+        if let Some(adr) = self.ctx.cm.http_address.as_ref() {
+            cmd.arg("-listen").arg("1").arg(adr);
+        } else {
+            cmd.arg(&filename);
+        }
+
+        let ff = cmd
             .stdin(std::process::Stdio::null())
             // .stderr(std::process::Stdio::null())
-            .kill_on_drop(false)
+            .kill_on_drop(true)
             .spawn()
             .unwrap();
-        let _ = ff.wait().await;
+        self.ffchild_record.replace(Some(ff));
         Ok(())
     }
 
-    pub fn create_pre_ff_command(&self) -> Result<Command> {
+    pub fn create_pre_ff_command(&self, vfd: i32) -> Result<Command> {
         let mut ret = Command::new("ffmpeg");
         ret.args(["-y", "-xerror"]);
         ret.arg("-hide_banner");
@@ -89,14 +96,14 @@ impl FfmpegControl {
         // ret.arg("-report");
         // ret.args(["-fflags", "+nobuffer"]);
         ret.args(["-probesize", "204800"]);
-        ret.arg("-i").arg(self.ctx.im.get_video_socket_path());
+        ret.arg("-i").arg(format!("pipe:{vfd}"));
         ret.args(["-map", "0:v:0?", "-map", "0:a:0?"]);
         ret.args(["-c", "copy"]);
         ret.args(["-f", "flv", "-"]);
         Ok(ret)
     }
 
-    pub fn create_ff_command(&self, stream_info: &HashMap<&str, String>) -> Result<Command> {
+    pub fn create_ff_command(&self, vfd: i32, afd: i32, dmp: u16, f2mfd: i32) -> Result<Command> {
         let mut ret = Command::new("ffmpeg");
         ret.args(["-y", "-xerror"]);
         ret.arg("-hide_banner");
@@ -110,42 +117,44 @@ impl FfmpegControl {
         match self.ctx.cm.stream_type.get() {
             crate::config::StreamType::DASH => {
                 if self.ctx.cm.site == Site::BiliVideo {
-                    ret.args(&[
+                    ret.args([
                         "-user_agent",
                         &crate::utils::gen_ua(),
                         "-headers",
                         "Referer: https://www.bilibili.com/",
                     ]);
-                    ret.arg("-i").arg(&stream_info["url_v"]);
-                    ret.args(&[
+                    let si = self.ctx.cm.stream_info.borrow();
+                    info!("{si:?}");
+                    ret.arg("-i").arg(&si["url_v"]);
+                    ret.args([
                         "-user_agent",
                         &crate::utils::gen_ua(),
                         "-headers",
                         "Referer: https://www.bilibili.com/",
                     ]);
-                    ret.arg("-i").arg(&stream_info["url_a"]);
+                    ret.arg("-i").arg(&si["url_a"]);
                 } else {
-                    ret.arg("-i").arg(self.ctx.im.get_video_socket_path());
-                    ret.arg("-i").arg(self.ctx.im.get_audio_socket_path());
+                    ret.arg("-i").arg(format!("pipe:{vfd}"));
+                    ret.arg("-i").arg(format!("pipe:{afd}"));
                 }
-                ret.arg("-i").arg(self.ctx.im.get_danmaku_socket_path());
+                ret.arg("-i").arg(format!("tcp://127.0.0.1:{dmp}"));
                 ret.args(["-map", "0:v:0?", "-map", "1:a:0?", "-map", "2:s:0", "-map", "2:s:1?"]);
             }
             crate::config::StreamType::HLS(0) => {
                 ret.arg("-i").arg("-");
-                ret.arg("-i").arg(self.ctx.im.get_danmaku_socket_path());
+                ret.arg("-i").arg(format!("tcp://127.0.0.1:{dmp}"));
                 ret.args(["-map", "0:v:0?", "-map", "0:a:0?", "-map", "1:s:0", "-map", "1:s:1?"]);
             }
             _ => {
-                ret.arg("-i").arg(self.ctx.im.get_video_socket_path());
-                ret.arg("-i").arg(self.ctx.im.get_danmaku_socket_path());
+                ret.arg("-i").arg(format!("pipe:{vfd}"));
+                ret.arg("-i").arg(format!("tcp://127.0.0.1:{dmp}"));
                 ret.args(["-map", "0:v:0?", "-map", "0:a:0?", "-map", "1:s:0", "-map", "1:s:1?"]);
             }
         }
-        ret.args(&["-c:v", "copy"]);
-        ret.args(&["-c:a", "copy"]);
-        ret.args(&["-c:s", "copy"]);
-        ret.args(&[
+        ret.args(["-c:v", "copy"]);
+        ret.args(["-c:a", "copy"]);
+        ret.args(["-c:s", "copy"]);
+        ret.args([
             "-metadata",
             format!("title={}", self.ctx.cm.title.borrow()).as_str(),
             // "-max_interleave_delta",
@@ -153,41 +162,25 @@ impl FfmpegControl {
             "-f",
             "matroska",
         ]);
-        match self.ctx.cm.run_mode {
-            RunMode::Play => {
-                ret.arg("-listen").arg("1").arg(self.ctx.im.get_f2m_socket_path());
-            }
-            RunMode::Record => {
-                match self.ctx.cm.http_address.as_ref() {
-                    Some(it) => {
-                        ret.arg("-listen").arg("1").arg(it);
-                    }
-                    None => {
-                        ret.arg("-listen").arg("1").arg(self.ctx.im.get_f2m_socket_path());
-                    }
-                };
-            }
-        }
+        ret.arg(format!("pipe:{f2mfd}"));
         Ok(ret)
     }
 
-    pub async fn quit(&self) -> Result<()> {
-        info!("close ffmpeg");
-        let _ = self
-            .ff_stdin
-            .borrow_mut()
-            .take()
-            .ok_or(anyhow!("ffmpeg stdin not found"))?
-            .write_all("q\n".as_bytes())
-            .await?;
+    pub async fn quit_record(&self) -> Result<()> {
+        info!("close ffmpeg record");
+        let Some(mut ff) = self.ffchild_record.take() else {
+            bail!("ffmpeg record process not found!");
+        };
+        let _so = self.ctx.im.replace_f2m_socket();
+        let _ = timeout(Duration::from_millis(5000), ff.wait()).await;
         Ok(())
     }
 
     pub async fn get_video_info<T: AsyncRead + Unpin>(&self, ffstderr: T) -> Result<()> {
         let mut reader = BufReader::new(ffstderr).lines();
-        let res_re = regex::Regex::new(r"Stream #[0-9].+? Video:.*?\D(\d{3,5})x(\d{2,5})\D.*").unwrap();
-        let pts_re = regex::Regex::new(r"Duration: ([^,\s]+),\s+(start: ([0-9.]+))*.+").unwrap();
-        let dm_re = regex::Regex::new(r"Stream #[0-9:]+\s*Subtitle:\s*ass").unwrap();
+        let res_re = Regex::new(r"Stream #[0-9].+? Video:.*?\D(\d{3,5})x(\d{2,5})\D.*").unwrap();
+        let pts_re = Regex::new(r"Duration: ([^,\s]+),\s+(start: ([0-9.]+))*.+").unwrap();
+        let dm_re = Regex::new(r"Stream #[0-9:]+\s*Subtitle:\s*ass").unwrap();
         let mut vinfo_sent = false;
         let mut ffready_sent = false;
         let mut retry = 0;
@@ -196,26 +189,26 @@ impl FfmpegControl {
             retry += 1;
             if retry < 5 { Some("".to_string()) } else { None }
         }) {
-            info!("{}", &line);
+            info!("{}", line);
             let line = line.trim();
-            if let Some(_it) = pts_re.captures(&line) {
+            if let Some(_it) = pts_re.captures(line) {
                 // duration = utils::str_to_ms(&it[1]);
                 // let st: f64 = it.get(3).map_or("0", |it| it.as_str()).parse().unwrap_or(0.0);
                 // start = (st * 1000.0) as u64;
                 // continue;
-            } else if let Some(_it) = dm_re.captures(&line) {
-                if ffready_sent == false {
-                    let _ = self.ctx.mtx.send(DMLMessage::FfmpegOutputReady).await;
+            } else if let Some(_it) = dm_re.captures(line) {
+                if !ffready_sent {
+                    self.ctx.mtx.send(DMLMessage::FfmpegOutputReady)?;
                     ffready_sent = true;
                 }
-            } else if let Some(it) = res_re.captures(&line) {
+            } else if let Some(it) = res_re.captures(line) {
                 let w = it[1].parse().unwrap();
                 let h = it[2].parse().unwrap();
                 if w < 100 || h < 100 {
-                    let _ = self.quit().await;
+                    // let _ = self.quit().await;
                 }
-                if vinfo_sent == false {
-                    let _ = self.ctx.mtx.send(DMLMessage::SetVideoInfo((w, h, 0))).await;
+                if !vinfo_sent {
+                    self.ctx.mtx.send(DMLMessage::SetVideoInfo(w, h, 0))?;
                     vinfo_sent = true;
                 }
             }
@@ -225,41 +218,36 @@ impl FfmpegControl {
         Ok(())
     }
 
-    pub async fn run(&self, stream_info: &HashMap<&str, String>) -> Result<()> {
+    pub async fn run(&self) -> Result<()> {
+        let f2mfd = self.ctx.im.get_f2m_socket_ff();
+        let vfd = self.ctx.im.get_video_socket_fd().ok_or_else(|| dmlerr!())?;
+        let afd = self.ctx.im.get_audio_socket_fd().ok_or_else(|| dmlerr!())?;
+        let dmp = self.ctx.im.get_danmaku_tcp_port();
         let mut ff = self
-            .create_ff_command(stream_info)?
+            .create_ff_command(vfd.as_raw_fd(), afd.as_raw_fd(), dmp, f2mfd)?
             .stdin(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .unwrap();
         let ffstderr = ff.stderr.take().unwrap();
+        let mut ffin = ff.stdin.take().unwrap();
         let ff_task = async {
             if self.ctx.cm.stream_type.get() == StreamType::HLS(0) {
                 let mut preff = self
-                    .create_pre_ff_command()?
+                    .create_pre_ff_command(vfd.as_raw_fd())?
                     .stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::null())
-                    .kill_on_drop(false)
+                    .kill_on_drop(true)
                     .spawn()
                     .unwrap();
-                let ffstdin = preff.stdin.take().unwrap();
-                *self.ff_stdin.borrow_mut() = Some(ffstdin);
-                let mut ffin = ff.stdin.take().unwrap();
                 let mut preffout = preff.stdout.take().unwrap();
                 tokio::io::copy(&mut preffout, &mut ffin).await?;
-                ff.kill().await?;
-                ff.wait().await?;
-            } else {
-                let ffstdin = ff.stdin.take().unwrap();
-                *self.ff_stdin.borrow_mut() = Some(ffstdin);
-                ff.wait().await?;
             };
             anyhow::Ok(())
         };
-
-        let _ = tokio::join!(ff_task, self.get_video_info(ffstderr));
-        Ok(())
+        let _ = tokio::join!(ff.wait(), ff_task, self.get_video_info(ffstderr));
+        bail!("ffmpeg control exited.");
     }
 }

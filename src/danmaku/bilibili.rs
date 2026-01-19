@@ -3,9 +3,8 @@ use bytes::{Buf, BufMut, Bytes};
 use chrono::Utc;
 use futures::{SinkExt, stream::StreamExt};
 use log::info;
-use reqwest::Url;
 use serde_json::json;
-use std::collections::VecDeque;
+use std::{collections::VecDeque, rc::Rc};
 use tokio::{
     io::{AsyncReadExt, BufReader},
     sync::mpsc,
@@ -14,14 +13,14 @@ use tokio::{
 use tokio_tungstenite::{connect_async, tungstenite::Message::Binary};
 // use wincode::{SchemaRead, SchemaWrite};
 
-use crate::dmlerr;
+use crate::{dmlerr, dmlive::DMLContext, utils::dmlch};
 
 use super::DMLDanmaku;
 
-const API_BUVID: &'static str = "https://api.bilibili.com/x/frontend/finger/spi";
-const API_ROOMINIT: &'static str = "https://api.live.bilibili.com/room/v1/Room/room_init";
-const API_DMINFO: &'static str = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo";
-const WS_HEARTBEAT: &'static [u8] = b"\x00\x00\x00\x1f\x00\x10\x00\x01\x00\x00\x00\x02\x00\x00\x00\x01\x5b\x6f\x62\x6a\x65\x63\x74\x20\x4f\x62\x6a\x65\x63\x74\x5d";
+const API_BUVID: &str = "https://api.bilibili.com/x/frontend/finger/spi";
+const API_ROOMINIT: &str = "https://api.live.bilibili.com/room/v1/Room/room_init";
+const API_DMINFO: &str = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo";
+const WS_HEARTBEAT: &[u8] = b"\x00\x00\x00\x1f\x00\x10\x00\x01\x00\x00\x00\x02\x00\x00\x00\x01\x5b\x6f\x62\x6a\x65\x63\x74\x20\x4f\x62\x6a\x65\x63\x74\x5d";
 
 #[derive(Encode, Decode, Debug)]
 struct BiliDanmakuHeader {
@@ -32,35 +31,41 @@ struct BiliDanmakuHeader {
     seq: u32,
 }
 
-pub struct Bilibili {}
+pub struct Bilibili {
+    ctx: Rc<DMLContext>,
+}
 
 impl Bilibili {
-    pub fn new() -> Self {
-        Bilibili {}
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
+        Bilibili { ctx }
     }
 
     async fn get_buvid(&self, client: &reqwest::Client) -> anyhow::Result<(String, String, String)> {
         let resp = client.get(API_BUVID).send().await?.json::<serde_json::Value>().await?;
         let buvid3 = resp.pointer("/data/b_3").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?;
         let buvid4 = resp.pointer("/data/b_4").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?;
-        return Ok((
+        Ok((
             buvid3.to_string(),
             buvid4.to_string(),
             Utc::now().timestamp().to_string(),
-        ));
+        ))
     }
 
-    async fn get_dm_token(
-        &self, client: &reqwest::Client, url: &str, rid: &str, cookies: &str,
-    ) -> anyhow::Result<String> {
-        let keys = crate::utils::bili_wbi::get_wbi_keys(&cookies).await?;
-        let param1 = vec![("id", rid.to_string()), ("type", "0".to_string())];
+    async fn get_dm_token(&self, client: &reqwest::Client, cookies: &str) -> anyhow::Result<String> {
+        let keys = crate::utils::bili_wbi::get_wbi_keys(cookies).await?;
+        let param1 = vec![
+            (
+                "id",
+                self.ctx.cm.stream_info.borrow().get("room_id").unwrap().to_string(),
+            ),
+            ("type", "0".to_string()),
+        ];
         let query = crate::utils::bili_wbi::encode_wbi(param1, keys);
         info!("{:?}", &query);
         let resp = client
             .get(format!("{}?{}", API_DMINFO, query))
             .header("User-Agent", crate::utils::gen_ua())
-            .header("Referer", url)
+            .header("Referer", self.ctx.cm.room_url.as_str())
             .header("Cookie", cookies)
             .send()
             .await?
@@ -71,16 +76,17 @@ impl Bilibili {
         Ok(token.to_string())
     }
 
-    async fn get_ws_info(&self, url: &str) -> anyhow::Result<(String, Bytes)> {
-        let rid =
-            Url::parse(url)?.path_segments().ok_or_else(|| dmlerr!())?.last().ok_or_else(|| dmlerr!())?.to_string();
+    async fn get_ws_info(&self) -> anyhow::Result<(String, Bytes)> {
         let mut reg_data = bytes::BytesMut::with_capacity(200);
         let client = reqwest::Client::builder().user_agent(crate::utils::gen_ua()).build()?;
         let (buvid3, buvid4, b_nut) = self.get_buvid(&client).await?;
-        let param1 = vec![("id", rid.as_str())];
+        let param1 = vec![(
+            "id",
+            self.ctx.cm.stream_info.borrow().get("room_id").unwrap().to_string(),
+        )];
         let resp = client
             .get(API_ROOMINIT)
-            .header("Referer", url)
+            .header("Referer", self.ctx.cm.room_url.as_str())
             .query(&param1)
             .send()
             .await?
@@ -88,7 +94,7 @@ impl Bilibili {
             .await?;
         let rid = resp.pointer("/data/room_id").ok_or_else(|| dmlerr!())?.as_u64().ok_or_else(|| dmlerr!())?;
         let cookie = format!("buvid3={}; b_nut={}; buvid4={}", &buvid3, &b_nut, &buvid4);
-        let token = self.get_dm_token(&client, url, rid.to_string().as_str(), &cookie).await?;
+        let token = self.get_dm_token(&client, &cookie).await?;
         // let rn = rand::random::<u64>();
         // let uid = 1000000 + (rn % 1000000);
         let out_json = json!({"roomid": rid, "uid": 0, "protover": 3, "platform": "web", "type": 2, "buvid": buvid3, "key": token});
@@ -144,12 +150,11 @@ impl Bilibili {
                     time: 0,
                     text: format!("[SC]{text}"),
                     nick: nick.to_string(),
-                    color: format!("{}", &color[1..]),
+                    color: color[1..].to_string(),
                     position: 8,
                 };
                 return Ok(dml_dm);
             }
-        } else {
         }
         Err(anyhow::anyhow!("other msg"))
     }
@@ -199,14 +204,14 @@ impl Bilibili {
         Ok(ret)
     }
 
-    pub async fn run(&self, url: &str, dtx: async_channel::Sender<DMLDanmaku>) -> anyhow::Result<()> {
+    pub async fn run(&self, dtx: dmlch::Sender<DMLDanmaku>) -> anyhow::Result<()> {
         let (tx, mut rx) = mpsc::channel(10);
-        let (ws, reg_data) = self.get_ws_info(url).await?;
+        let (ws, reg_data) = self.get_ws_info().await?;
         let (ws_stream, _) = connect_async(&ws).await?;
         let (mut ws_write, mut ws_read) = ws_stream.split();
-        ws_write.send(Binary(reg_data.into())).await?;
+        ws_write.send(Binary(reg_data)).await?;
         let hb_task = async {
-            while let Ok(_) = ws_write.send(Binary(WS_HEARTBEAT.into())).await {
+            while ws_write.send(Binary(WS_HEARTBEAT.into())).await.is_ok() {
                 sleep(Duration::from_secs(20)).await;
             }
             Err(anyhow::anyhow!("send heartbeat failed!"))
@@ -239,7 +244,7 @@ impl Bilibili {
                     dm_cnt.set(dm_cnt.get().saturating_sub(1));
                     itvl
                 };
-                dtx.send(d).await?;
+                dtx.send(d)?;
                 if itvl < 50 {
                 } else if itvl > 500 {
                     sleep(Duration::from_millis(500)).await;

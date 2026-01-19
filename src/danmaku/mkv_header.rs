@@ -1,7 +1,7 @@
 use anyhow::*;
 use bytes::{BufMut, Bytes, BytesMut};
 
-pub const MKV_HEADER: &'static [u8] = include_bytes!("header.mkv");
+pub const MKV_HEADER: &[u8] = include_bytes!("header.mkv");
 
 #[derive(Debug)]
 pub struct MKVBlockGroup {
@@ -32,7 +32,7 @@ impl DMKVCluster {
     pub fn new() -> Self {
         Self {
             cluster_id: 0x1f43b675,
-            cluster_size: 10 as u64 | 0x0100_0000_0000_0000,
+            cluster_size: 10_u64 | 0x0100_0000_0000_0000,
             timestamp_id: 0xe7,
             timestamp_size: 0x88,
             timestamp: 0,
@@ -40,10 +40,10 @@ impl DMKVCluster {
         }
     }
 
-    pub fn reset(&mut self, first_ts: u64) -> () {
+    pub fn reset(&mut self, first_ts: u64) {
         self.timestamp = first_ts;
         self.danmaku.clear();
-        self.cluster_size = 10 as u64 | 0x0100_0000_0000_0000;
+        self.cluster_size = 10_u64 | 0x0100_0000_0000_0000;
     }
 
     pub fn add_ass_block(&mut self, ts: u64, ass: Vec<u8>, speed: u64, track_number: u8) -> Result<()> {

@@ -1,5 +1,6 @@
 use super::segment::MediaSegment;
 use crate::{
+    dmlerr,
     dmlive::{DMLContext, DMLMessage},
     streamer::segment::SegmentStream,
 };
@@ -24,7 +25,7 @@ pub struct M3U8 {
 }
 
 // #[allow(unused)]
-pub struct HLS {
+pub struct Hls {
     url: RefCell<String>,
     header_done: Cell<bool>,
     watch_dog: Cell<bool>,
@@ -32,10 +33,11 @@ pub struct HLS {
     ctx: Rc<DMLContext>,
 }
 
-impl HLS {
-    pub fn new(stream_info: &HashMap<&str, String>, ctx: Rc<DMLContext>) -> Self {
-        HLS {
-            url: RefCell::new(stream_info["url"].to_string()),
+impl Hls {
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
+        let url = ctx.cm.stream_info.borrow()["url"].to_string();
+        Hls {
+            url: RefCell::new(url),
             watch_dog: Cell::new(false),
             header_done: Cell::new(false),
             stream_ready: Cell::new(false),
@@ -44,7 +46,7 @@ impl HLS {
     }
 
     pub fn decode_m3u8(m3u8_text: &str) -> anyhow::Result<M3U8> {
-        let mut lines = m3u8_text.lines();
+        let lines = m3u8_text.lines();
         let mut sq = 0u64;
         let mut td = 5u64;
         let mut header = "".to_string();
@@ -53,7 +55,7 @@ impl HLS {
         let mut m3u8_streams = VecDeque::new();
         let mut extinf = "".to_string();
         let mut ext_stream_inf = "".to_string();
-        while let Some(line) = lines.next() {
+        for line in lines {
             info!("{}", &line);
             let line = line.trim();
             if line.starts_with("#") {
@@ -134,8 +136,8 @@ impl HLS {
         let url = if clip.starts_with("http") {
             clip.to_string()
         } else {
-            let url = url::Url::parse(&*self.url.borrow())?;
-            let url2 = url.join(&clip)?;
+            let url = url::Url::parse(self.url.borrow().as_str())?;
+            let url2 = url.join(clip)?;
             if url2.as_str().contains("?") {
                 url2.as_str().to_string()
             } else {
@@ -146,9 +148,8 @@ impl HLS {
     }
 
     async fn download_task(&self, client: &Client, ss: &SegmentStream) -> anyhow::Result<()> {
-        let mut stream = self.ctx.im.get_video_socket().await?;
-        let mut rx = ss.clip_rx.borrow_mut();
-        while let Some(mut clip) = rx.recv().await {
+        let mut stream = self.ctx.im.get_video_socket().ok_or_else(|| dmlerr!())?;
+        while let Ok(mut clip) = ss.clip_rx.recv().await {
             // info!("hls: clip: {}", &clip);
             if self.header_done.get().not() && clip.is_header {
                 clip.skip = 0;
@@ -158,11 +159,12 @@ impl HLS {
             }
             let url = self.parse_clip_url(&clip.url)?;
             let mut resp = client.get(url).header("Connection", "keep-alive").send().await?;
+            info!("hls resp: {resp:?}");
             while let Some(chunk) = resp.chunk().await? {
                 if clip.skip == 0 {
                     if !self.stream_ready.get() {
                         self.stream_ready.set(true);
-                        let _ = self.ctx.mtx.send(DMLMessage::StreamReady).await;
+                        self.ctx.mtx.send(DMLMessage::StreamReady)?;
                     }
                     stream.write_all(&chunk).await?;
                 }
@@ -173,14 +175,12 @@ impl HLS {
     }
 
     async fn refresh_m3u8_task(&self, client: &Client, ss: &SegmentStream) -> anyhow::Result<()> {
-        let mut rx = ss.refresh_rx.borrow_mut();
-        while let Some(_) = rx.recv().await {
+        while ss.refresh_rx.recv().await.is_ok() {
             let resp = client
-                .get(&*self.url.borrow())
+                .get(self.url.borrow().as_str())
                 .timeout(tokio::time::Duration::from_millis(ss.refresh_itvl.get()))
-                .header("Connection", "keep-alive")
-                .send()
-                .await;
+                .header("Connection", "keep-alive");
+            let resp = resp.send().await;
             let resp = match resp {
                 Ok(it) => it,
                 Err(e) => {
@@ -239,7 +239,6 @@ impl HLS {
             it = self.watch_dog_task() => { it?; },
             it = seg_stream.run() => { it?; },
         }
-        info!("hls streamer exit");
-        Ok(())
+        anyhow::bail!("hls streamer exit");
     }
 }

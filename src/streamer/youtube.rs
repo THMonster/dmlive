@@ -1,7 +1,6 @@
 use crate::{
     dmlerr,
     dmlive::{DMLContext, DMLMessage},
-    ipcmanager::DMLStream,
     streamer::segment::{MediaSegment, SegmentStream},
     streamfinder,
 };
@@ -13,8 +12,11 @@ use std::{
     collections::{HashMap, VecDeque},
     rc::Rc,
 };
-use tokio::sync::mpsc::{self, Receiver};
 use tokio::{io::AsyncWriteExt, sync::mpsc::Sender};
+use tokio::{
+    net::UnixStream,
+    sync::mpsc::{self, Receiver},
+};
 
 fn get_head_sq_and_time(resp: &Response) -> anyhow::Result<(u64, u64)> {
     let sq: u64 = resp.headers().get("X-Head-Seqnum").ok_or_else(|| dmlerr!())?.to_str()?.parse()?;
@@ -24,7 +26,6 @@ fn get_head_sq_and_time(resp: &Response) -> anyhow::Result<(u64, u64)> {
 
 #[allow(unused)]
 pub struct Youtube {
-    room_url: String,
     url_v: RefCell<String>,
     url_a: RefCell<String>,
     sq: Cell<u64>,
@@ -34,14 +35,16 @@ pub struct Youtube {
 }
 
 impl Youtube {
-    pub fn new(stream_info: &HashMap<&str, String>, ctx: Rc<DMLContext>) -> Self {
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
+        let url_v = RefCell::new(ctx.cm.stream_info.borrow()["url_v"].to_string());
+        let url_a = RefCell::new(ctx.cm.stream_info.borrow()["url_a"].to_string());
+        let sq = Cell::new(ctx.cm.stream_info.borrow()["sq"].parse().unwrap_or(1));
         Youtube {
-            url_v: RefCell::new(stream_info["url_v"].to_string()),
-            url_a: RefCell::new(stream_info["url_a"].to_string()),
-            sq: Cell::new(stream_info["sq"].parse().unwrap_or(1)),
+            url_v,
+            url_a,
+            sq,
             itvl: Cell::new(1000),
             stream_ready: Cell::new(false),
-            room_url: stream_info["room_url"].to_string(),
             ctx,
         }
     }
@@ -73,7 +76,7 @@ impl Youtube {
     }
 
     pub async fn download_audio(
-        &self, client: &Client, stream: &mut Box<dyn DMLStream>, seg: &MediaSegment,
+        &self, client: &Client, stream: &mut UnixStream, seg: &MediaSegment,
     ) -> anyhow::Result<()> {
         if seg.skip != 0 {
             return Ok(());
@@ -97,19 +100,20 @@ impl Youtube {
     }
 
     pub async fn download_video(
-        &self, client: &Client, stream: &mut Box<dyn DMLStream>, seg: &MediaSegment,
+        &self, client: &Client, stream: &mut UnixStream, seg: &MediaSegment,
     ) -> anyhow::Result<()> {
         if seg.skip == 2 {
             return Ok(());
         }
         let u = format!("{}sq/{}", self.url_v.borrow(), &seg.url);
-        info!("v: {}", &u);
+        info!("v: {u}");
         let mut resp = client
             .get(u)
             .header("Connection", "keep-alive")
             .header("Referer", "https://www.youtube.com/")
             .send()
             .await?;
+        info!("v: {resp:?}",);
         if seg.skip == 1 {
             let (sq, ti) = get_head_sq_and_time(&resp)?;
             self.sq.set(sq);
@@ -126,7 +130,7 @@ impl Youtube {
             if seg.skip == 0 {
                 if !self.stream_ready.get() {
                     self.stream_ready.set(true);
-                    let _ = self.ctx.mtx.send(DMLMessage::StreamReady).await;
+                    self.ctx.mtx.send(DMLMessage::StreamReady)?;
                 }
                 stream.write_all(&chunk).await?;
             }
@@ -140,7 +144,7 @@ impl Youtube {
         interval.tick().await;
         loop {
             interval.tick().await;
-            let info = streamfinder::youtube::get_live_info(client, self.room_url.as_str()).await?;
+            let info = streamfinder::youtube::get_live_info(client, self.ctx.cm.room_url.as_str()).await?;
             let mut info = streamfinder::youtube::Youtube::decode_mpd(client, &info.5).await?;
             *self.url_v.borrow_mut() = info.remove("url_v").unwrap();
             *self.url_a.borrow_mut() = info.remove("url_a").unwrap();
@@ -148,10 +152,9 @@ impl Youtube {
     }
 
     pub async fn refresh_seq_task(&self, ss: &SegmentStream) -> anyhow::Result<()> {
-        let mut rx = ss.refresh_rx.borrow_mut();
         let mut sq = self.sq.get().saturating_sub(1);
         let mut state = 0;
-        while let Some(_) = rx.recv().await {
+        while ss.refresh_rx.recv().await.is_ok() {
             let mut clips = VecDeque::new();
             let skip = if state == 0 {
                 state = 1;
@@ -171,7 +174,7 @@ impl Youtube {
                 skip,
                 props: HashMap::new(),
                 url: sq.to_string(),
-                is_header: if state == 2 { true } else { false },
+                is_header: state == 2,
             };
             clips.push_back(c);
             ss.update_sequence(sq, clips, self.itvl.get()).await?;
@@ -180,17 +183,17 @@ impl Youtube {
     }
 
     pub async fn video_task(&self, client: &Client, mut rx: Receiver<MediaSegment>) -> anyhow::Result<()> {
-        let mut video_stream = self.ctx.im.get_video_socket().await?;
+        let mut video_stream = self.ctx.im.get_video_socket().ok_or_else(|| dmlerr!())?;
         while let Some(clip) = rx.recv().await {
-            self.download_video(&client, &mut video_stream, &clip).await?;
+            self.download_video(client, &mut video_stream, &clip).await?;
         }
         Ok(())
     }
 
     pub async fn audio_task(&self, client: &Client, mut rx: Receiver<MediaSegment>) -> anyhow::Result<()> {
-        let mut audio_stream = self.ctx.im.get_audio_socket().await?;
+        let mut audio_stream = self.ctx.im.get_audio_socket().ok_or_else(|| dmlerr!())?;
         while let Some(clip) = rx.recv().await {
-            self.download_audio(&client, &mut audio_stream, &clip).await?;
+            self.download_audio(client, &mut audio_stream, &clip).await?;
         }
         Ok(())
     }
@@ -198,8 +201,7 @@ impl Youtube {
     pub async fn dispatch_task(
         &self, ss: &SegmentStream, tx_v: Sender<MediaSegment>, tx_a: Sender<MediaSegment>,
     ) -> anyhow::Result<()> {
-        let mut rx = ss.clip_rx.borrow_mut();
-        while let Some(clip) = rx.recv().await {
+        while let Ok(clip) = ss.clip_rx.recv().await {
             info!("youtube: clip {}", &clip.url);
             tx_v.send(clip.clone()).await?;
             tx_a.send(clip).await?;
@@ -223,7 +225,6 @@ impl Youtube {
             it = self.audio_task(&client, rx_a) => { it?; },
             it = seg_stream.run() => { it?; },
         }
-        info!("youtube streamer exit");
-        Ok(())
+        anyhow::bail!("youtube streamer exit");
     }
 }

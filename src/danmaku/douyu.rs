@@ -1,22 +1,26 @@
-use crate::{dmlerr, utils::gen_ua};
 use bytes::{Buf, BufMut, Bytes};
-use futures::{stream::StreamExt, SinkExt};
-use reqwest::Url;
-use std::{collections::HashMap, time::Duration};
+use futures::{SinkExt, stream::StreamExt};
+use std::{collections::HashMap, rc::Rc, time::Duration};
 use tokio::time::sleep;
-use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message::Binary};
+use tokio_tungstenite::tungstenite::{Message::Binary, client::IntoClientRequest};
 
-use super::DMLDanmaku;
+use crate::{
+    danmaku::DMLDanmaku,
+    dmlerr,
+    dmlive::DMLContext,
+    utils::{dmlch, gen_ua, openssl},
+};
 
-const HEARTBEAT: &'static [u8] =
+const HEARTBEAT: &[u8] =
     b"\x14\x00\x00\x00\x14\x00\x00\x00\xb1\x02\x00\x00\x74\x79\x70\x65\x40\x3d\x6d\x72\x6b\x6c\x2f\x00";
 
 pub struct Douyu {
     color_tab: HashMap<&'static str, &'static str>,
+    ctx: Rc<DMLContext>,
 }
 
 impl Douyu {
-    pub fn new() -> Self {
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
         let mut ct = HashMap::new();
         ct.insert("1", "ff0000");
         ct.insert("2", "1e87f0");
@@ -24,14 +28,12 @@ impl Douyu {
         ct.insert("4", "ff7f00");
         ct.insert("5", "9b39f4");
         ct.insert("6", "ff69b4");
-        Douyu { color_tab: ct }
+        Douyu { color_tab: ct, ctx }
     }
 
-    async fn get_ws_info(&self, url: &str) -> anyhow::Result<(String, Vec<Bytes>)> {
+    async fn get_ws_info(&self) -> anyhow::Result<(String, Vec<Bytes>)> {
         let mut reg_datas = Vec::new();
-        let rid =
-            Url::parse(url)?.path_segments().ok_or_else(|| dmlerr!())?.last().ok_or_else(|| dmlerr!())?.to_string();
-        let pl = format!(r#"type@=loginreq/roomid@={}/"#, rid);
+        let pl = format!(r#"type@=loginreq/roomid@={}/"#, self.ctx.cm.room_id);
         let mut data = bytes::BytesMut::with_capacity(100);
         let len = pl.len() as u32 + 9;
         data.put_u32_le(len);
@@ -40,7 +42,7 @@ impl Douyu {
         data.put_slice(pl.as_bytes());
         data.put_slice(b"\x00");
         reg_datas.push(data.freeze());
-        let pl = format!(r#"type@=joingroup/rid@={}/gid@=1/"#, rid);
+        let pl = format!(r#"type@=joingroup/rid@={}/gid@=1/"#, self.ctx.cm.room_id);
         let mut data = bytes::BytesMut::with_capacity(100);
         let len = pl.len() as u32 + 9;
         data.put_u32_le(len);
@@ -101,16 +103,18 @@ impl Douyu {
         }
         Ok(ret)
     }
-    pub async fn run(&self, url: &str, dtx: async_channel::Sender<DMLDanmaku>) -> anyhow::Result<()> {
-        let (ws, reg_data) = self.get_ws_info(url).await?;
+    pub async fn run(&self, dtx: dmlch::Sender<DMLDanmaku>) -> anyhow::Result<()> {
+        let (ws, reg_data) = self.get_ws_info().await?;
         let mut req = ws.into_client_request().unwrap();
         req.headers_mut().insert("User-Agent", gen_ua().parse().unwrap());
-        let (ws_stream, _) = tokio_tungstenite::connect_async(req).await?;
+        let tls_stream = openssl::TlsStream::connect("danmuproxy.douyu.com", "8505");
+        let (ws_stream, _) = tokio_tungstenite::client_async(req, tls_stream).await?;
+        // let (ws_stream, _) = tokio_tungstenite::connect_async(req).await?;
         let (mut ws_write, mut ws_read) = ws_stream.split();
         ws_write.send(Binary(reg_data[0].clone())).await?;
         ws_write.send(Binary(reg_data[1].clone())).await?;
         let hb_task = async {
-            while let Ok(_) = ws_write.send(Binary(HEARTBEAT.into())).await {
+            while ws_write.send(Binary(HEARTBEAT.into())).await.is_ok() {
                 sleep(Duration::from_secs(20)).await;
             }
             Err(anyhow::anyhow!("send heartbeat failed!"))
@@ -120,7 +124,7 @@ impl Douyu {
                 let m = m?;
                 let mut dm = self.decode_msg(m.into_data())?;
                 for d in dm.drain(..) {
-                    dtx.send(d).await?;
+                    dtx.send(d)?;
                 }
             }
             anyhow::Ok(())

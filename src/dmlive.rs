@@ -1,16 +1,22 @@
-use crate::{
-    config::ConfigManager, danmaku::Danmaku, ffmpeg::FfmpegControl, ipcmanager::IPCManager, mpv::MpvControl,
-    streamer::Streamer, streamfinder::StreamFinder,
-};
-use async_channel::{Receiver, Sender};
 use futures::StreamExt;
-use log::info;
-use std::rc::Rc;
-use tokio::time::Duration;
+use log::{info, warn};
+use std::{cell::Cell, rc::Rc};
+use tokio::{sync::Notify, time::Duration};
+
+use crate::{
+    config::{ConfigManager, RecordMode, RunMode, SiteType},
+    danmaku::Danmaku,
+    ffmpeg::FfmpegControl,
+    ipcmanager::IPCManager,
+    mpv::MpvControl,
+    streamer::Streamer,
+    streamfinder::StreamFinder,
+    utils::dmlch::{Receiver, Sender},
+};
 
 pub struct DMLContext {
-    pub im: Rc<IPCManager>,
-    pub cm: Rc<ConfigManager>,
+    pub im: IPCManager,
+    pub cm: ConfigManager,
     pub mrx: Receiver<DMLMessage>,
     pub mtx: Sender<DMLMessage>,
 }
@@ -21,7 +27,7 @@ pub enum DMLMessage {
     SetFontAlpha(f64),
     SetDMSpeed(u64),
     PlayVideo,
-    SetVideoInfo((u64, u64, u64)),
+    SetVideoInfo(u64, u64, u64),
     ToggleShowNick,
     FfmpegOutputReady,
     RequestRestart,
@@ -37,6 +43,8 @@ pub struct DMLive {
     st: Rc<Streamer>,
     dm: Rc<Danmaku>,
     ctx: Rc<DMLContext>,
+    quit_notify: (Notify, Cell<bool>),
+    ready2play_notify: (Notify, Cell<bool>),
 }
 
 impl DMLive {
@@ -53,6 +61,8 @@ impl DMLive {
             st,
             dm,
             ctx,
+            quit_notify: (Notify::new(), Cell::new(false)),
+            ready2play_notify: (Notify::new(), Cell::new(false)),
         }
     }
 
@@ -61,15 +71,13 @@ impl DMLive {
             let _ = tokio::signal::ctrl_c().await;
         };
         tokio::select! {
+            // _ = self.ctx.im.run() => {},
             _ = self.dispatch_task() => {},
             _ = self.mc.run() => {},
-            _ = self.play() => {},
+            r = self.start() => { let _ = r.map_err(|e| info!("dmlive error: {e}")); },
             _ = signal_task => {},
         }
-        match self.ctx.im.stop().await {
-            Ok(_) => {}
-            Err(err) => info!("ipc manager stop error: {err}"),
-        };
+        let _ = self.fc.quit_record().await;
     }
 
     async fn dispatch_task(&self) {
@@ -103,126 +111,184 @@ impl DMLive {
                 self.dm.toggle_show_nick().await;
             }
             DMLMessage::RequestRestart => {
-                let _ = self.fc.quit().await;
+                // let _ = self.fc.quit().await;
+                info!("request restart");
+                if self.quit_notify.1.get() {
+                    self.quit_notify.0.notify_one();
+                }
             }
-            DMLMessage::RequestExit => {
-                // self.quit().await;
-            }
-            DMLMessage::SetVideoInfo((w, h, pts)) => {
+            DMLMessage::RequestExit => {}
+            DMLMessage::SetVideoInfo(w, h, pts) => {
                 info!("video info: w {w} h {h} pts {pts}");
-                // danmaku task
-                if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
-                    let _ = self.dm.run_bilivideo(16.0 * h as f64 / w as f64 / 9.0).await;
-                } else {
-                    self.dm.set_ratio_scale((16.0 / 9.0) / (w as f64 / h as f64));
-                    // let _ = self.dm.run(16.0 * h as f64 / w as f64 / 9.0, pts).await;
+                self.dm.set_ratio_scale((16.0 / 9.0) / (w as f64 / h as f64));
+                if self.dm.ready_notify.1.get() {
+                    self.dm.ready_notify.0.notify_one();
                 }
             }
             DMLMessage::StreamReady => {
                 info!("stream ready");
-                let _ = self.dm.run().await;
+                // let _ = self.dm.run().await;
             }
             DMLMessage::PlayVideo => {
-                let _ = self.play_video().await.map_err(|e| info!("play video error: {}", e));
+                // let _ = self.play_video().await.map_err(|e| info!("play video error: {}", e));
             }
             DMLMessage::FfmpegOutputReady => {
                 info!("ffmpeg output ready");
                 tokio::time::sleep(Duration::from_millis(200)).await;
-                match self.ctx.cm.run_mode {
-                    crate::config::RunMode::Play => {
-                        let _ = self.mc.reload_video().await;
-                    }
-                    crate::config::RunMode::Record => {
-                        if self.ctx.cm.http_address.is_none() {
-                            let _ = self.fc.write_record_task().await;
-                        }
-                    }
+                if self.ready2play_notify.1.get() {
+                    self.ready2play_notify.0.notify_one();
                 }
             }
         }
     }
 
-    pub async fn play(&self) -> anyhow::Result<()> {
-        loop {
-            match self.ctx.cm.run_mode {
-                crate::config::RunMode::Play => {
-                    if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
-                        self.play_video().await?;
-                        tokio::time::sleep(Duration::from_secs(u64::MAX)).await;
-                    } else {
-                        self.play_live().await?;
-                    }
-                }
-                crate::config::RunMode::Record => match self.ctx.cm.record_mode {
-                    crate::config::RecordMode::All => {
-                        self.play_live().await?;
-                        if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
-                            return Err(anyhow::anyhow!("recording finished"));
-                        }
-                    }
-                    crate::config::RecordMode::Danmaku => {
-                        self.download_danmaku().await?;
-                        return Err(anyhow::anyhow!("recording finished"));
-                    }
+    pub async fn start(&self) -> anyhow::Result<()> {
+        let mode = match self.ctx.cm.run_mode {
+            RunMode::Play => match self.ctx.cm.site_type {
+                SiteType::Live => 0,
+                SiteType::Video => 1,
+            },
+            RunMode::Record => match self.ctx.cm.site_type {
+                SiteType::Live => 2,
+                SiteType::Video => match self.ctx.cm.record_mode {
+                    RecordMode::All => 3,
+                    RecordMode::Danmaku => 4,
                 },
+            },
+        };
+        loop {
+            self.ctx.im.generate().await?;
+            match mode {
+                0 => {
+                    self.play_live().await?;
+                }
+                1 => {
+                    self.play_video().await?;
+                }
+                2 => {
+                    self.record_live().await?;
+                }
+                3 => {
+                    self.record_video().await?;
+                    break;
+                }
+                _ => {
+                    self.record_danmaku().await?;
+                    break;
+                }
             }
-            tokio::time::sleep(Duration::from_millis(1000)).await;
+            self.quit_notify.1.set(false);
+            self.ready2play_notify.1.set(false);
+            self.dm.ready_notify.1.set(false);
+            tokio::time::sleep(Duration::from_millis(2000)).await;
         }
-        // Ok(())
+        Ok(())
     }
 
     pub async fn play_live(&self) -> anyhow::Result<()> {
-        let mut stream_info = self.sf.run().await?;
-        self.ctx.cm.set_stream_type(&stream_info);
-        *self.ctx.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
-        self.dm.set_bili_video_cid(stream_info.get("bili_cid").unwrap_or(&"".to_string())).await;
-        let ff_task = async {
-            self.fc.run(&stream_info).await?;
+        self.sf.run().await?;
+        self.ctx.cm.set_stream_type();
+        *self.ctx.cm.title.borrow_mut() = format!(
+            "{} - {}",
+            self.ctx.cm.stream_info.borrow()["title"],
+            self.ctx.cm.stream_info.borrow()["owner_name"]
+        );
+        let watchdog = async {
+            self.quit_notify.1.set(true);
+            self.quit_notify.0.notified().await;
+            Err(anyhow::anyhow!("watchdog exited!"))?;
             anyhow::Ok(())
         };
-        let streamer_task = async {
-            let _ = self.st.run(&stream_info).await.map_err(|e| info!("streamer error: {}", e));
-            self.fc.quit().await?;
+        let mpv_task = async {
+            self.ready2play_notify.1.set(true);
+            self.ready2play_notify.0.notified().await;
+            self.mc.reload_video()?;
             anyhow::Ok(())
         };
-        if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
-            ff_task.await?;
-        } else {
-            let (_ff_res, _st_res) = tokio::join!(ff_task, streamer_task);
-        }
+        let _ = tokio::try_join!(
+            watchdog,
+            mpv_task,
+            self.fc.run(),
+            self.dm.run(),
+            self.st.run()
+        )
+        .map_err(|e| warn!("play live error: {e}"));
+        let _ = self.mc.stop();
         Ok(())
     }
 
     pub async fn play_video(&self) -> anyhow::Result<()> {
-        let mut stream_info = self.sf.run().await?;
-        self.ctx.cm.set_stream_type(&stream_info);
-        *self.ctx.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
-        self.dm.set_bili_video_cid(stream_info.get("bili_cid").unwrap_or(&"".to_string())).await;
-        self.mc.reload_edl_video(&stream_info).await?;
+        self.sf.run().await?;
+        *self.ctx.cm.title.borrow_mut() = self.ctx.cm.stream_info.borrow()["title"].to_string();
+
+        let watchdog = async {
+            self.quit_notify.1.set(true);
+            self.quit_notify.0.notified().await;
+            Err(anyhow::anyhow!("watchdog exited!"))?;
+            anyhow::Ok(())
+        };
+        self.mc.reload_edl_video()?;
+        let _ = tokio::try_join!(watchdog, self.dm.run(),).map_err(|e| warn!("play video error: {e}"));
         Ok(())
     }
 
-    pub async fn download_danmaku(&self) -> anyhow::Result<()> {
-        let mut stream_info = self.sf.run().await?;
-        *self.ctx.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
-        self.dm.set_bili_video_cid(stream_info.get("bili_cid").unwrap_or(&"".to_string())).await;
-        let ff_task = async {
-            self.fc.write_danmaku_only_task().await?;
+    pub async fn record_live(&self) -> anyhow::Result<()> {
+        self.sf.run().await?;
+        self.ctx.cm.set_stream_type();
+        *self.ctx.cm.title.borrow_mut() = format!(
+            "{} - {}",
+            self.ctx.cm.stream_info.borrow()["title"],
+            self.ctx.cm.stream_info.borrow()["owner_name"]
+        );
+        let watchdog = async {
+            self.quit_notify.1.set(true);
+            self.quit_notify.0.notified().await;
+            Err(anyhow::anyhow!("watchdog exited!"))?;
             anyhow::Ok(())
         };
-        let danmaku_task = async {
-            match self.ctx.cm.site {
-                crate::config::Site::BiliVideo => {
-                    let _ = self.dm.run_bilivideo(1.0).await;
-                }
-                crate::config::Site::BahaVideo => {
-                    let _ = self.dm.run_baha().await;
-                }
-                _ => todo!(),
-            }
+        let record_task = async {
+            self.ready2play_notify.1.set(true);
+            self.ready2play_notify.0.notified().await;
+            self.fc.write_record_task().await?;
             anyhow::Ok(())
         };
-        let (_ff_res, _st_res) = tokio::join!(ff_task, danmaku_task);
+
+        let _ = tokio::try_join!(
+            watchdog,
+            record_task,
+            self.fc.run(),
+            self.dm.run(),
+            self.st.run()
+        )
+        .map_err(|e| warn!("record live error: {e}"));
+        let _ = self.fc.quit_record().await;
+        Ok(())
+    }
+
+    pub async fn record_video(&self) -> anyhow::Result<()> {
+        self.sf.run().await?;
+        self.ctx.cm.set_stream_type();
+        *self.ctx.cm.title.borrow_mut() = self.ctx.cm.stream_info.borrow()["title"].to_string();
+
+        let record_task = async {
+            self.ready2play_notify.1.set(true);
+            self.ready2play_notify.0.notified().await;
+            self.ready2play_notify.1.set(false);
+            self.fc.write_record_task().await?;
+            anyhow::Ok(())
+        };
+        let _ = tokio::try_join!(record_task, self.fc.run(), self.dm.run());
+        Ok(())
+    }
+
+    pub async fn record_danmaku(&self) -> anyhow::Result<()> {
+        self.sf.run().await?;
+        *self.ctx.cm.title.borrow_mut() = self.ctx.cm.stream_info.borrow()["title"].to_string();
+
+        // because there is no video to determine the ratio
+        self.dm.ready_notify.0.notify_one();
+
+        let _ = tokio::try_join!(self.fc.write_danmaku_only_task(), self.dm.run())?;
         Ok(())
     }
 }

@@ -1,9 +1,9 @@
 use base64::{Engine, engine::general_purpose};
-use regex::Regex;
-use std::{collections::HashMap, str};
+use regex_lite::Regex;
+use std::{collections::HashMap, rc::Rc, str};
 use url::form_urlencoded;
 
-use crate::dmlerr;
+use crate::{dmlerr, dmlive::DMLContext};
 
 fn gen_n_number(l: u8) -> String {
     let mut ret = String::new();
@@ -131,20 +131,24 @@ pub async fn get_live_info(
     Ok((nick.to_string(), title.to_string(), cover, is_living, vurl))
 }
 
-pub struct Huya {}
+pub struct Huya {
+    ctx: Rc<DMLContext>,
+}
 
 impl Huya {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
+        Self { ctx }
     }
 
-    pub async fn get_live(&self, room_url: &str) -> anyhow::Result<HashMap<&'static str, String>> {
+    pub async fn get_live(&self) -> anyhow::Result<()> {
         let client = reqwest::Client::new();
-        let mut ret = HashMap::new();
-        let room_info = get_live_info(&client, room_url).await?;
-        room_info.3.then(|| 0).ok_or_else(|| dmlerr!())?;
-        ret.insert("title", format!("{} - {}", room_info.1, room_info.0));
-        ret.insert("url", room_info.4);
-        Ok(ret)
+        let room_info = get_live_info(&client, &self.ctx.cm.room_url).await?;
+        room_info.3.then_some(0).ok_or_else(|| dmlerr!())?;
+        let mut si = self.ctx.cm.stream_info.borrow_mut();
+        si.insert("owner_name", room_info.0);
+        si.insert("title", room_info.1);
+        si.insert("cover", room_info.2);
+        si.insert("url", room_info.4);
+        Ok(())
     }
 }

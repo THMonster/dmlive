@@ -1,5 +1,7 @@
 pub mod bili_wbi;
 pub mod cookies;
+pub mod dmlch;
+pub mod openssl;
 // pub mod jsruntime;
 
 use tokio::process::Command;
@@ -25,7 +27,7 @@ pub fn gen_ua() -> String {
     //     "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{}.0.{}.{} Safari/537.36",
     //     n1, n2, n3
     // );
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:146.0) Gecko/20100101 Firefox/146.0".into()
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0".into()
     // "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.45 Safari/537.36".into()
     // "Mozilla/5.0 (X11; Linux x86_64; rv:94.0) Gecko/20100101 Firefox/94.0".into()
     // "Mozilla/5.0 (Android 10; Mobile; rv:94.0) Gecko/94.0 Firefox/94.0".into()
@@ -65,10 +67,10 @@ pub fn nm(a: u64, ary: u64) -> Vec<u8> {
 }
 
 pub fn _str_to_ms(time_str: &str) -> u64 {
-    let mut t = time_str.trim().rsplit(':');
+    let t = time_str.trim().rsplit(':');
     let mut ret = 0f64;
     let mut i = 0usize;
-    while let Some(it) = t.next() {
+    for it in t {
         if i == 0 {
             let s: f64 = it.parse().unwrap_or(0.0);
             ret += s;
@@ -88,13 +90,5 @@ pub fn _str_to_ms(time_str: &str) -> u64 {
 
 pub async fn is_android() -> bool {
     let output = Command::new("getprop").arg("ro.build.version.release").output();
-    match output.await {
-        Ok(it) => {
-            if it.status.success() {
-                return true;
-            }
-        }
-        Err(_) => {}
-    };
-    false
+    output.await.map(|x| x.status.success()).unwrap_or(false)
 }

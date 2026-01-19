@@ -25,8 +25,7 @@ impl CmdParser {
         let mut fa = None;
         let mut speed = None;
         let mut page = None;
-        if s.starts_with("dml:") {
-            let s = &s[4..];
+        if let Some(s) = s.strip_prefix("dml:") {
             let cmds: Vec<&str> = s.split(',').collect();
             for cmd in cmds.iter() {
                 if cmd.trim().eq("r") || cmd.trim().eq("reload") {
@@ -49,28 +48,16 @@ impl CmdParser {
                 let arg1 = *iter.next().unwrap_or(&"");
                 if arg1.eq("fs") {
                     let arg2 = *iter.next().unwrap_or(&"");
-                    fs = match arg2.parse::<f64>() {
-                        Ok(it) => Some(it),
-                        Err(_) => None,
-                    };
+                    fs = arg2.parse::<f64>().ok();
                 } else if arg1.eq("fa") {
                     let arg2 = *iter.next().unwrap_or(&"");
-                    fa = match arg2.parse::<f64>() {
-                        Ok(it) => Some(it),
-                        Err(_) => None,
-                    };
+                    fa = arg2.parse::<f64>().ok();
                 } else if arg1.eq("speed") {
                     let arg2 = *iter.next().unwrap_or(&"");
-                    speed = match arg2.parse::<u64>() {
-                        Ok(it) => Some(it),
-                        Err(_) => None,
-                    };
+                    speed = arg2.parse::<u64>().ok();
                 } else if arg1.eq("p") || arg1.eq("page") {
                     let arg2 = *iter.next().unwrap_or(&"");
-                    page = match arg2.parse::<u64>() {
-                        Ok(it) => Some(it),
-                        Err(_) => None,
-                    };
+                    page = arg2.parse::<u64>().ok();
                 }
             }
         }
