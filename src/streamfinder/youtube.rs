@@ -5,9 +5,11 @@ use std::{collections::HashMap, rc::Rc};
 
 use crate::{dmlerr, dmlive::DMLContext, utils};
 
+const YTB_API1: &'static str = "https://www.youtube.com/youtubei/v1/player";
+
 pub async fn get_live_info(
     client: &Client, room_url: &str,
-) -> anyhow::Result<(String, String, String, bool, String, String)> {
+) -> anyhow::Result<(String, String, String, bool, String, String, String)> {
     let resp = client
         .get(room_url)
         .header("Accept-Language", "en-US")
@@ -20,8 +22,11 @@ pub async fn get_live_info(
 
     let re_cover = Regex::new(r#"link\s+rel="image_src"\s+href="([^"]+)""#).unwrap();
     let re_owner = Regex::new(r#"meta\s+property="og:title"\s+content="([^"]+)""#).unwrap();
+    let re_cid_new = Regex::new(r#"link\s+rel="alternate"[^>]+href="([^"]+)""#).unwrap();
     let avatar = re_cover.captures(&resp).and_then(|x| x.get(1)).map(|x| x.as_str());
     let owner = re_owner.captures(&resp).and_then(|x| x.get(1)).map(|x| x.as_str());
+    let cid_new =
+        re_cid_new.captures(&resp).and_then(|x| x.get(1)?.as_str().split('/').find_map(|x| x.strip_prefix("@")));
 
     let re = Regex::new(r"ytInitialPlayerResponse\s*=\s*(\{.+?\});.*?</script>").unwrap();
     let j: Option<serde_json::Value> =
@@ -33,7 +38,9 @@ pub async fn get_live_info(
         .and_then(|x| x.pointer("/videoDetails/thumbnail/thumbnails")?.as_array()?.last()?.pointer("/url")?.as_str())
         .or(avatar)
         .ok_or_else(|| dmlerr!())?;
-    let cid = j
+    let vid = j.and_then(|x| x.pointer("/videoDetails/videoId")?.as_str()).unwrap_or("");
+    let cid = j.and_then(|x| x.pointer("/videoDetails/channelId")?.as_str()).unwrap_or("");
+    let cid_new = j
         .and_then(|x| {
             x.pointer("/microformat/playerMicroformatRenderer/ownerProfileUrl")?
                 .as_str()?
@@ -41,19 +48,18 @@ pub async fn get_live_info(
                 .last()?
                 .strip_prefix("@")
         })
-        .unwrap_or("");
+        .or(cid_new)
+        .ok_or_else(|| dmlerr!())?;
     let is_live = j.and_then(|x| x.pointer("/videoDetails/isLive")?.as_bool()).unwrap_or(false);
-
-    let mpd_url = j.and_then(|x| x.pointer("/streamingData/dashManifestUrl")?.as_str()).unwrap_or("");
-    // let hls_url = j.pointer("/streamingData/hlsManifestUrl").ok_or_else(|| dmlerr!())?.as_str().unwrap();
 
     Ok((
         owner.to_string(),
         title.to_string(),
         cover.to_string(),
         is_live,
+        cid_new.to_string(),
+        vid.to_string(),
         cid.to_string(),
-        mpd_url.to_string(),
     ))
 }
 
@@ -174,10 +180,34 @@ impl Youtube {
         info!("{room_info:?}");
         room_info.3.then(|| 0).ok_or_else(|| dmlerr!())?;
 
-        // let urls = self.decode_m3u8(&client, &hls_url).await?;
-        let mut ret = Self::decode_mpd(&client, &room_info.5).await?;
+        let vid = room_info.5.as_str();
+        let payload = format!(
+            r#"{{"videoId": "{vid}", "contentCheckOk": true, "racyCheckOk": true, "context": {{ "client": {{ "clientName": "ANDROID", "clientVersion": "19.45.36", "platform": "DESKTOP",   "clientScreen": "EMBED",   "clientFormFactor": "UNKNOWN_FORM_FACTOR",   "browserName": "Chrome",  }},   "user": {{"lockedSafetyMode": "false"}}, "request": {{"useSsl": "true"}}, }}, }}"#,
+        );
+        let resp = client
+            .post(YTB_API1)
+            .query(&[("key", "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8")])
+            .header("User-Agent", crate::utils::gen_ua())
+            .header("Referer", "https://www.youtube.com")
+            .body(payload)
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+
+        let hls_url =
+            resp.pointer("/streamingData/hlsManifestUrl").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?;
+        // let mpd_url =
+        //     resp.pointer("/streamingData/dashManifestUrl").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?;
+
+        let mut ret = HashMap::new();
+        ret.insert("url", Self::decode_m3u8(&client, &hls_url).await?);
+        // let mut ret = Self::decode_mpd(&client, &mpd_url).await?;
 
         ret.insert("title", format!("{} - {}", room_info.1, room_info.0));
+        ret.insert("vid", room_info.5);
+        ret.insert("cid", room_info.6);
+        info!("{ret:?}");
         Ok(ret)
     }
 }

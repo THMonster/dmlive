@@ -158,6 +158,7 @@ impl HLS {
             }
             let url = self.parse_clip_url(&clip.url)?;
             let mut resp = client.get(url).header("Connection", "keep-alive").send().await?;
+            info!("hls resp: {resp:?}");
             while let Some(chunk) = resp.chunk().await? {
                 if clip.skip == 0 {
                     if !self.stream_ready.get() {

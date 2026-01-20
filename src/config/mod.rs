@@ -107,6 +107,7 @@ pub struct ConfigManager {
     pub stream_type: Cell<StreamType>,
     pub bvideo_info: RefCell<BVideoInfo>,
     pub title: RefCell<String>,
+    pub stream_info: RefCell<HashMap<&'static str, String>>,
     on_writing: Cell<bool>,
 }
 
@@ -163,6 +164,7 @@ impl ConfigManager {
             cookies_from_browser: c.cookies_from_browser.unwrap_or_else(|| "".into()),
             display_fps: Cell::new((60, 0)),
             title: RefCell::new("".to_string()),
+            stream_info: RefCell::new(HashMap::new()),
         }
     }
 

@@ -101,13 +101,14 @@ impl Youtube {
             return Ok(());
         }
         let u = format!("{}sq/{}", self.url_v.borrow(), &seg.url);
-        info!("v: {}", &u);
+        info!("v: {u}");
         let mut resp = client
             .get(u)
             .header("Connection", "keep-alive")
             .header("Referer", "https://www.youtube.com/")
             .send()
             .await?;
+        info!("v: {resp:?}", );
         if seg.skip == 1 {
             let (sq, ti) = get_head_sq_and_time(&resp)?;
             self.sq.set(sq);
