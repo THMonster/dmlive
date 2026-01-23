@@ -107,6 +107,10 @@ pub struct ConfigManager {
     pub stream_type: Cell<StreamType>,
     pub bvideo_info: RefCell<BVideoInfo>,
     pub title: RefCell<String>,
+    // owner_name: nickname of video/stream's owner;
+    // title: title of video/stream
+    // url/url_v/url_a: real url of video/stream
+    // cover: cover image of video/stream
     pub stream_info: RefCell<HashMap<&'static str, String>>,
     on_writing: Cell<bool>,
 }
@@ -175,14 +179,15 @@ impl ConfigManager {
         self.parse_url();
     }
 
-    pub fn set_stream_type(&self, stream_info: &HashMap<&str, String>) {
-        if stream_info["url"].contains(".m3u8") {
+    pub fn set_stream_type(&self) {
+        let si = self.stream_info.borrow();
+        if si["url"].contains(".m3u8") {
             if self.site == Site::BiliLive {
                 self.stream_type.set(StreamType::HLS(1)); // for m4s inside
             } else {
                 self.stream_type.set(StreamType::HLS(0)); // for ts inside
             }
-        } else if stream_info["url"].contains(".flv") {
+        } else if si["url"].contains(".flv") {
             self.stream_type.set(StreamType::FLV);
         } else {
             self.stream_type.set(StreamType::DASH);
@@ -246,7 +251,9 @@ impl ConfigManager {
             self.site = Site::BiliVideo;
         } else if self.room_url.contains("ani.gamer.com.tw/") {
             for q in u.query_pairs() {
-                if q.0.eq("p") {
+                if q.0.eq("sn") {
+                    self.room_id = q.1.to_string();
+                } else if q.0.eq("p") {
                     self.bvideo_info.borrow_mut().current_page = q.1.parse().unwrap();
                 }
             }

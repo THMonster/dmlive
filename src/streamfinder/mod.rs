@@ -10,10 +10,8 @@ use anyhow::Result;
 use anyhow::anyhow;
 use log::info;
 use log::warn;
-use std::collections::HashMap;
 use std::rc::Rc;
 
-#[allow(unused)]
 pub struct StreamFinder {
     ctx: Rc<DMLContext>,
 }
@@ -23,10 +21,10 @@ impl StreamFinder {
         Self { ctx }
     }
 
-    pub async fn run(&self) -> Result<HashMap<&str, String>> {
+    pub async fn run(&self) -> Result<()> {
         loop {
             for _ in 0..20 {
-                let stream_info = match self.ctx.cm.site {
+                let res = match self.ctx.cm.site {
                     crate::config::Site::BiliLive => {
                         let b = bilibili::Bilibili::new(self.ctx.clone());
                         b.get_live().await
@@ -56,9 +54,9 @@ impl StreamFinder {
                         b.get_video().await
                     }
                 };
-                match stream_info {
-                    Ok(it) => {
-                        return Ok(it);
+                match res {
+                    Ok(_) => {
+                        return Ok(());
                     }
                     Err(e) => {
                         info!("{}", e);

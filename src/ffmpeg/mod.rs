@@ -1,30 +1,32 @@
-use crate::config::{RunMode, Site, StreamType};
-use crate::dmlive::DMLContext;
-use crate::dmlive::DMLMessage;
 use anyhow::Result;
-use anyhow::anyhow;
 use log::info;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 use tokio::io::{AsyncRead, BufReader};
-use tokio::process::ChildStdin;
+use tokio::sync::Notify;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
     process::Command,
 };
 
+use crate::config::{Site, StreamType};
+use crate::dmlive::DMLContext;
+use crate::dmlive::DMLMessage;
+
 pub struct FfmpegControl {
     ctx: Rc<DMLContext>,
-    ff_stdin: RefCell<Option<ChildStdin>>,
+    quit_notify: Notify,
+    quited_notify: Notify,
 }
 impl FfmpegControl {
     pub fn new(ctx: Rc<DMLContext>) -> Self {
         Self {
             ctx,
-            ff_stdin: RefCell::new(None),
+            quit_notify: Notify::new(),
+            quited_notify: Notify::new(),
         }
     }
+
     pub async fn write_danmaku_only_task(&self) -> Result<()> {
         let in_stream = self.ctx.im.get_danmaku_socket_path();
         let max_len = match self.ctx.cm.title.borrow().char_indices().nth(70) {
@@ -70,7 +72,13 @@ impl FfmpegControl {
         cmd.arg("-i");
         cmd.arg(&in_stream);
         cmd.args(["-c", "copy", "-f", "matroska"]);
-        cmd.arg(&filename);
+
+        if let Some(adr) = self.ctx.cm.http_address.as_ref() {
+            cmd.arg("-listen").arg("1").arg(adr);
+        } else {
+            cmd.arg(&filename);
+        }
+
         let mut ff = cmd
             .stdin(std::process::Stdio::null())
             // .stderr(std::process::Stdio::null())
@@ -96,7 +104,7 @@ impl FfmpegControl {
         Ok(ret)
     }
 
-    pub fn create_ff_command(&self, stream_info: &HashMap<&str, String>) -> Result<Command> {
+    pub fn create_ff_command(&self) -> Result<Command> {
         let mut ret = Command::new("ffmpeg");
         ret.args(["-y", "-xerror"]);
         ret.arg("-hide_banner");
@@ -116,14 +124,15 @@ impl FfmpegControl {
                         "-headers",
                         "Referer: https://www.bilibili.com/",
                     ]);
-                    ret.arg("-i").arg(&stream_info["url_v"]);
+                    let si = self.ctx.cm.stream_info.borrow();
+                    ret.arg("-i").arg(&si["url_v"]);
                     ret.args(&[
                         "-user_agent",
                         &crate::utils::gen_ua(),
                         "-headers",
                         "Referer: https://www.bilibili.com/",
                     ]);
-                    ret.arg("-i").arg(&stream_info["url_a"]);
+                    ret.arg("-i").arg(&si["url_a"]);
                 } else {
                     ret.arg("-i").arg(self.ctx.im.get_video_socket_path());
                     ret.arg("-i").arg(self.ctx.im.get_audio_socket_path());
@@ -153,33 +162,28 @@ impl FfmpegControl {
             "-f",
             "matroska",
         ]);
-        match self.ctx.cm.run_mode {
-            RunMode::Play => {
-                ret.arg("-listen").arg("1").arg(self.ctx.im.get_f2m_socket_path());
-            }
-            RunMode::Record => {
-                match self.ctx.cm.http_address.as_ref() {
-                    Some(it) => {
-                        ret.arg("-listen").arg("1").arg(it);
-                    }
-                    None => {
-                        ret.arg("-listen").arg("1").arg(self.ctx.im.get_f2m_socket_path());
-                    }
-                };
-            }
-        }
+        ret.arg("-listen").arg("1").arg(self.ctx.im.get_f2m_socket_path());
+        // match self.ctx.cm.run_mode {
+        //     RunMode::Play => {
+        //     }
+        //     RunMode::Record => {
+        //         match self.ctx.cm.http_address.as_ref() {
+        //             Some(it) => {
+        //                 ret.arg("-listen").arg("1").arg(it);
+        //             }
+        //             None => {
+        //                 ret.arg("-listen").arg("1").arg(self.ctx.im.get_f2m_socket_path());
+        //             }
+        //         };
+        //     }
+        // }
         Ok(ret)
     }
 
     pub async fn quit(&self) -> Result<()> {
         info!("close ffmpeg");
-        let _ = self
-            .ff_stdin
-            .borrow_mut()
-            .take()
-            .ok_or(anyhow!("ffmpeg stdin not found"))?
-            .write_all("q\n".as_bytes())
-            .await?;
+        self.quit_notify.notify_one();
+        self.quited_notify.notified().await;
         Ok(())
     }
 
@@ -212,7 +216,7 @@ impl FfmpegControl {
                 let w = it[1].parse().unwrap();
                 let h = it[2].parse().unwrap();
                 if w < 100 || h < 100 {
-                    let _ = self.quit().await;
+                    // let _ = self.quit().await;
                 }
                 if vinfo_sent == false {
                     let _ = self.ctx.mtx.send(DMLMessage::SetVideoInfo((w, h, 0))).await;
@@ -225,15 +229,16 @@ impl FfmpegControl {
         Ok(())
     }
 
-    pub async fn run(&self, stream_info: &HashMap<&str, String>) -> Result<()> {
+    pub async fn run(&self) -> Result<()> {
         let mut ff = self
-            .create_ff_command(stream_info)?
+            .create_ff_command()?
             .stdin(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
+            .kill_on_drop(false)
             .spawn()
             .unwrap();
         let ffstderr = ff.stderr.take().unwrap();
+        let ffstdin = RefCell::new(ff.stdin.take());
         let ff_task = async {
             if self.ctx.cm.stream_type.get() == StreamType::HLS(0) {
                 let mut preff = self
@@ -244,22 +249,24 @@ impl FfmpegControl {
                     .kill_on_drop(false)
                     .spawn()
                     .unwrap();
-                let ffstdin = preff.stdin.take().unwrap();
-                *self.ff_stdin.borrow_mut() = Some(ffstdin);
-                let mut ffin = ff.stdin.take().unwrap();
+                let mut ffin = ffstdin.replace(preff.stdin.take()).unwrap();
                 let mut preffout = preff.stdout.take().unwrap();
                 tokio::io::copy(&mut preffout, &mut ffin).await?;
-                ff.kill().await?;
-                ff.wait().await?;
             } else {
-                let ffstdin = ff.stdin.take().unwrap();
-                *self.ff_stdin.borrow_mut() = Some(ffstdin);
-                ff.wait().await?;
             };
             anyhow::Ok(())
         };
 
-        let _ = tokio::join!(ff_task, self.get_video_info(ffstderr));
+        let quit_task = async {
+            self.quit_notify.notified().await;
+            if let Some(mut i) = ffstdin.take() {
+                i.write_all("q\n".as_bytes()).await?;
+            }
+            self.quited_notify.notify_one();
+            anyhow::Ok(())
+        };
+
+        let _ = tokio::join!(ff.wait(), ff_task, self.get_video_info(ffstderr));
         Ok(())
     }
 }

@@ -33,11 +33,14 @@ pub struct Youtube {
 }
 
 impl Youtube {
-    pub fn new(stream_info: &HashMap<&str, String>, ctx: Rc<DMLContext>) -> Self {
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
+        let url_v = RefCell::new(ctx.cm.stream_info.borrow()["url_v"].to_string());
+        let url_a = RefCell::new(ctx.cm.stream_info.borrow()["url_a"].to_string());
+        let sq = Cell::new(ctx.cm.stream_info.borrow()["sq"].parse().unwrap_or(1));
         Youtube {
-            url_v: RefCell::new(stream_info["url_v"].to_string()),
-            url_a: RefCell::new(stream_info["url_a"].to_string()),
-            sq: Cell::new(stream_info["sq"].parse().unwrap_or(1)),
+            url_v,
+            url_a,
+            sq,
             itvl: Cell::new(1000),
             stream_ready: Cell::new(false),
             ctx,
@@ -108,7 +111,7 @@ impl Youtube {
             .header("Referer", "https://www.youtube.com/")
             .send()
             .await?;
-        info!("v: {resp:?}", );
+        info!("v: {resp:?}",);
         if seg.skip == 1 {
             let (sq, ti) = get_head_sq_and_time(&resp)?;
             self.sq.set(sq);

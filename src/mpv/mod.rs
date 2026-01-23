@@ -1,19 +1,20 @@
 pub mod cmdparser;
-use crate::config::Platform;
-use crate::dmlerr;
-use crate::dmlive::DMLContext;
-use crate::{dmlive::DMLMessage, utils::gen_ua};
+
 use anyhow::Result;
 use futures::StreamExt;
 use log::info;
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::rc::Rc;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
     net::UnixStream,
     process::Command,
 };
+
+use crate::config::Platform;
+use crate::dmlerr;
+use crate::dmlive::DMLContext;
+use crate::{dmlive::DMLMessage, utils::gen_ua};
 
 pub struct MpvControl {
     last_rpc_ts: Cell<i64>,
@@ -54,14 +55,17 @@ impl MpvControl {
         Ok(ret)
     }
 
-    pub async fn reload_edl_video(&self, stream_info: &HashMap<&str, String>) -> Result<()> {
-        let edl = format!(
-            "edl://!no_clip;!no_chapters;%{0}%{1};!new_stream;!no_clip;!no_chapters;%{2}%{3}",
-            stream_info["url_a"].chars().count(),
-            stream_info["url_a"],
-            stream_info["url_v"].chars().count(),
-            stream_info["url_v"]
-        );
+    pub async fn reload_edl_video(&self) -> Result<()> {
+        let edl = {
+            let si = self.ctx.cm.stream_info.borrow();
+            format!(
+                "edl://!no_clip;!no_chapters;%{0}%{1};!new_stream;!no_clip;!no_chapters;%{2}%{3}",
+                si["url_a"].chars().count(),
+                si["url_a"],
+                si["url_v"].chars().count(),
+                si["url_v"]
+            )
+        };
         info!("load video: {}--{}", &edl, self.ctx.cm.title.borrow());
         self.mpv_command_tx
             .send(format!(
@@ -98,7 +102,7 @@ impl MpvControl {
     // }
 
     pub async fn stop(&self) -> Result<()> {
-        self.mpv_command_tx.send("{ \"command\": [\"stop\"] }\n".into()).await?;
+        self.mpv_command_tx.send("{ \"command\": [ \"stop\" ] }\n".into()).await?;
         Ok(())
     }
 
@@ -122,18 +126,14 @@ impl MpvControl {
 
     async fn handle_mpv_event(&self, line: String) -> Result<()> {
         let j: serde_json::Value = serde_json::from_str(&line)?;
-        if let Some(rid) = j.pointer("/request_id") {
-            if rid.as_u64().eq(&Some(114)) {
-                let w = j.pointer("/data/w").ok_or_else(|| dmlerr!())?.as_u64().unwrap();
-                let h = j.pointer("/data/h").ok_or_else(|| dmlerr!())?.as_u64().unwrap();
+        match j.pointer("/request_id").and_then(|x| x.as_u64()) {
+            Some(114) => {
+                let w = j.pointer("/data/w").and_then(|x| x.as_u64()).ok_or_else(|| dmlerr!())?;
+                let h = j.pointer("/data/h").and_then(|x| x.as_u64()).ok_or_else(|| dmlerr!())?;
                 if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
                     let _ = self.ctx.mtx.send(DMLMessage::SetVideoInfo((w, h, 0))).await;
                     self.mpv_command_tx
-                        .send(
-                            r#"{ "command": ["sub-remove", "1"], "async": true }
-                              "#
-                            .into(),
-                        )
+                        .send("{ \"command\": [\"sub-remove\", 1], \"async\": true }\n".to_string())
                         .await?;
                     self.mpv_command_tx
                         .send(format!(
@@ -142,46 +142,38 @@ impl MpvControl {
                         ))
                         .await?;
                 }
-            } else if rid.as_u64().eq(&Some(514)) {
-                match j.pointer("/data") {
-                    Some(it) => match it.as_f64() {
-                        Some(it) => {
-                            self.ctx.cm.display_fps.set((it.round() as u64, self.ctx.cm.display_fps.get().1));
-                        }
-                        None => {}
-                    },
-                    None => {}
-                }
-            } else if rid.as_u64().eq(&Some(1919)) {
-                match j.pointer("/data") {
-                    Some(it) => match it.as_f64() {
-                        Some(it) => {
-                            if self.ctx.cm.display_fps.get().1 == 0 && it < 59.0 {
-                                self.mpv_command_tx
-                                    .send(
-                                        r#"{ "command": ["set_property", "vf", "fps=fps=60:round=near"] }
-                                        "#
-                                        .into(),
-                                    )
-                                    .await?;
-                            }
-                        }
-                        None => {}
-                    },
-                    None => {}
+            }
+            Some(514) => {
+                if let Some(it) = j.pointer("/data").and_then(|x| x.as_f64()) {
+                    self.ctx.cm.display_fps.set((it.round() as u64, self.ctx.cm.display_fps.get().1));
                 }
             }
-        }
-        let event = j.pointer("/event").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?;
-        if event.eq("end-file") {
-            if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
-                if j.pointer("/reason").ok_or_else(|| dmlerr!())?.as_str().unwrap().eq("eof") {
-                    self.ctx.cm.bvideo_info.borrow_mut().current_page += 1;
-                    let _ = self.ctx.mtx.send(DMLMessage::PlayVideo).await;
+            Some(1919) => {
+                if let Some(it) = j.pointer("/data").and_then(|x| x.as_f64()) {
+                    if self.ctx.cm.display_fps.get().1 == 0 && it < 59.0 {
+                        self.mpv_command_tx
+                            .send(
+                                "{ \"command\": [\"set_property\", \"vf\", \"fps=fps=60:round=near\"] }\n".to_string(),
+                            )
+                            .await?;
+                    }
                 }
-            } else {
-                // tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                // let _ = self.reload_video().await;
+            }
+            _ => {}
+        }
+        let event = j.pointer("/event").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?;
+        if event.eq("end-file") {
+            match self.ctx.cm.site_type {
+                crate::config::SiteType::Live => {
+                    self.ctx.mtx.send(DMLMessage::RequestRestart).await?;
+                }
+                crate::config::SiteType::Video => {
+                    info!("{j:?}");
+                    if j.pointer("/reason").and_then(|x| x.as_str()).eq(&Some("eof")) {
+                        self.ctx.cm.bvideo_info.borrow_mut().current_page += 1;
+                    }
+                    self.ctx.mtx.send(DMLMessage::RequestRestart).await?;
+                }
             }
         } else if event.eq("file-loaded") {
             tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
@@ -201,22 +193,29 @@ impl MpvControl {
                 return Ok(());
             }
             self.last_rpc_ts.set(now);
-            let cmds = cmdparser::CmdParser::new(
-                j.pointer("/args/0").ok_or_else(|| dmlerr!())?.as_str().ok_or_else(|| dmlerr!())?,
-            );
+            let cmds =
+                cmdparser::CmdParser::new(j.pointer("/args/0").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?);
             if cmds.restart {
-                if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
-                    let _ = self.ctx.mtx.send(DMLMessage::PlayVideo).await;
-                } else {
-                    self.stop().await?;
-                }
+                self.stop().await?;
             }
             if cmds.fs.is_some() {
                 let _ = self.ctx.mtx.send(DMLMessage::SetFontScale(cmds.fs.unwrap())).await;
             } else if cmds.fsup {
-                let _ = self.ctx.mtx.send(DMLMessage::SetFontScale(self.ctx.cm.font_scale.get() + 0.15)).await;
+                let _ = self
+                    .ctx
+                    .mtx
+                    .send(DMLMessage::SetFontScale(
+                        self.ctx.cm.font_scale.get() + 0.15,
+                    ))
+                    .await;
             } else if cmds.fsdown {
-                let _ = self.ctx.mtx.send(DMLMessage::SetFontScale(self.ctx.cm.font_scale.get() - 0.15)).await;
+                let _ = self
+                    .ctx
+                    .mtx
+                    .send(DMLMessage::SetFontScale(
+                        self.ctx.cm.font_scale.get() - 0.15,
+                    ))
+                    .await;
             }
             if cmds.fa.is_some() {
                 let _ = self.ctx.mtx.send(DMLMessage::SetFontAlpha(cmds.fa.unwrap())).await;
@@ -296,7 +295,6 @@ impl MpvControl {
             }
         };
         let _ = self.init_mpv_rpc().await;
-        // let _ = self.reload_video().await;
         tokio::select! {
             _ = mpv_rpc_write_task => {},
             _ = mpv_rpc_read_task => {},
@@ -316,21 +314,17 @@ impl MpvControl {
     }
 
     pub async fn run(&self) -> Result<()> {
-        match self.ctx.cm.run_mode {
-            crate::config::RunMode::Play => {
-                if self.ctx.cm.plat == Platform::Android {
-                    self.run_android().await?;
-                } else {
-                    self.run_normal().await?;
-                }
-            }
-            crate::config::RunMode::Record => {
-                while let Ok(s) = self.mpv_command_rx.recv().await {
-                    if s.contains("quit") {
-                        break;
-                    }
-                }
-            }
+        let mode = match self.ctx.cm.run_mode {
+            crate::config::RunMode::Play => match self.ctx.cm.plat {
+                Platform::Android => 1,
+                _ => 0,
+            },
+            crate::config::RunMode::Record => 0,
+        };
+        if mode == 0 {
+            self.run_normal().await?;
+        } else {
+            std::future::pending::<()>().await;
         }
         Ok(())
     }

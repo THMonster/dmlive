@@ -171,7 +171,7 @@ impl Youtube {
         }
     }
 
-    pub async fn get_live(&self) -> anyhow::Result<HashMap<&'static str, String>> {
+    pub async fn get_live(&self) -> anyhow::Result<()> {
         let client = reqwest::Client::builder()
             .user_agent(utils::gen_ua())
             .timeout(tokio::time::Duration::from_secs(10))
@@ -200,14 +200,16 @@ impl Youtube {
         // let mpd_url =
         //     resp.pointer("/streamingData/dashManifestUrl").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?;
 
-        let mut ret = HashMap::new();
-        ret.insert("url", Self::decode_m3u8(&client, &hls_url).await?);
-        // let mut ret = Self::decode_mpd(&client, &mpd_url).await?;
+        let url = Self::decode_m3u8(&client, &hls_url).await?;
+        // let  url = Self::decode_mpd(&client, &mpd_url).await?;
 
-        ret.insert("title", format!("{} - {}", room_info.1, room_info.0));
-        ret.insert("vid", room_info.5);
-        ret.insert("cid", room_info.6);
-        info!("{ret:?}");
-        Ok(ret)
+        let mut si = self.ctx.cm.stream_info.borrow_mut();
+        si.insert("url", url);
+        si.insert("owner_name", room_info.0);
+        si.insert("title", room_info.1);
+        si.insert("vid", room_info.5);
+        si.insert("cid", room_info.6);
+        info!("{si:?}");
+        Ok(())
     }
 }

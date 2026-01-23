@@ -1,23 +1,20 @@
+use log::{info, warn};
+use std::{cell::Cell, rc::Rc};
+use tokio::io::AsyncWriteExt;
+
 use crate::{
     config::Site,
     dmlive::{DMLContext, DMLMessage},
 };
-use log::{info, warn};
-use std::{cell::Cell, collections::HashMap, rc::Rc};
-use tokio::io::AsyncWriteExt;
 
 #[allow(unused)]
 pub struct FLV {
-    url: String,
     ctx: Rc<DMLContext>,
 }
 
 impl FLV {
-    pub fn new(stream_info: &HashMap<&str, String>, ctx: Rc<DMLContext>) -> Self {
-        FLV {
-            url: stream_info["url"].to_string(),
-            ctx,
-        }
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
+        FLV { ctx }
     }
 
     async fn download(&self) -> anyhow::Result<()> {
@@ -26,8 +23,6 @@ impl FLV {
             .user_agent(crate::utils::gen_ua())
             .connect_timeout(tokio::time::Duration::from_secs(10))
             .build()?;
-        let url = self.url.clone();
-        let room_url = self.ctx.cm.room_url.clone();
         let watch_dog = Cell::new(0);
         let watchdog_task = async {
             loop {
@@ -40,7 +35,9 @@ impl FLV {
             }
         };
         let dl_task = async {
-            let mut resp = client.get(url).header("Referer", room_url);
+            let mut resp = client
+                .get(self.ctx.cm.stream_info.borrow()["url"].as_str())
+                .header("Referer", self.ctx.cm.room_url.as_str());
             if self.ctx.cm.plive && matches!(self.ctx.cm.site, Site::BiliLive) {
                 resp = resp.header("Cookie", self.ctx.cm.bcookie.as_str());
             }

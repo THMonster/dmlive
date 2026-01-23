@@ -33,9 +33,10 @@ pub struct HLS {
 }
 
 impl HLS {
-    pub fn new(stream_info: &HashMap<&str, String>, ctx: Rc<DMLContext>) -> Self {
+    pub fn new(ctx: Rc<DMLContext>) -> Self {
+        let url = ctx.cm.stream_info.borrow()["url"].to_string();
         HLS {
-            url: RefCell::new(stream_info["url"].to_string()),
+            url: RefCell::new(url),
             watch_dog: Cell::new(false),
             header_done: Cell::new(false),
             stream_ready: Cell::new(false),
@@ -134,7 +135,7 @@ impl HLS {
         let url = if clip.starts_with("http") {
             clip.to_string()
         } else {
-            let url = url::Url::parse(&*self.url.borrow())?;
+            let url = url::Url::parse(self.url.borrow().as_str())?;
             let url2 = url.join(&clip)?;
             if url2.as_str().contains("?") {
                 url2.as_str().to_string()
@@ -177,7 +178,7 @@ impl HLS {
         let mut rx = ss.refresh_rx.borrow_mut();
         while let Some(_) = rx.recv().await {
             let resp = client
-                .get(&*self.url.borrow())
+                .get(self.url.borrow().as_str())
                 .timeout(tokio::time::Duration::from_millis(ss.refresh_itvl.get()))
                 .header("Connection", "keep-alive")
                 .send()

@@ -140,13 +140,15 @@ impl Huya {
         Self { ctx }
     }
 
-    pub async fn get_live(&self) -> anyhow::Result<HashMap<&'static str, String>> {
+    pub async fn get_live(&self) -> anyhow::Result<()> {
         let client = reqwest::Client::new();
-        let mut ret = HashMap::new();
         let room_info = get_live_info(&client, &self.ctx.cm.room_url).await?;
         room_info.3.then(|| 0).ok_or_else(|| dmlerr!())?;
-        ret.insert("title", format!("{} - {}", room_info.1, room_info.0));
-        ret.insert("url", room_info.4);
-        Ok(ret)
+        let mut si = self.ctx.cm.stream_info.borrow_mut();
+        si.insert("owner_name", room_info.0);
+        si.insert("title", room_info.1);
+        si.insert("cover", room_info.2);
+        si.insert("url", room_info.4);
+        Ok(())
     }
 }

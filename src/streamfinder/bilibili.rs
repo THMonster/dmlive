@@ -49,19 +49,17 @@ impl Bilibili {
         Bilibili { ctx }
     }
 
-    pub async fn get_live(&self) -> Result<HashMap<&'static str, String>> {
+    pub async fn get_live(&self) -> Result<()> {
         let rid = self.ctx.cm.room_id.as_str();
         let client = reqwest::Client::builder()
             .user_agent(crate::utils::gen_ua())
             .connect_timeout(tokio::time::Duration::from_secs(10))
             .build()?;
 
-        let mut ret = HashMap::new();
         let mut param1 = Vec::new();
 
         let room_info = get_live_info(&client, rid).await?;
         room_info.3.then(|| 0).ok_or_else(|| dmlerr!())?;
-        ret.insert("title", format!("{} - {}", room_info.1, room_info.0));
 
         param1.clear();
         param1.push(("qn", "20000"));
@@ -81,8 +79,12 @@ impl Bilibili {
         //     None => self.get_live_new(room_url).await?,
         // };
         let url = self.get_live_new().await?;
-        ret.insert("url", url);
-        Ok(ret)
+        let mut si = self.ctx.cm.stream_info.borrow_mut();
+        si.insert("owner_name", room_info.0);
+        si.insert("title", room_info.1);
+        si.insert("cover", room_info.2);
+        si.insert("url", url);
+        Ok(())
     }
 
     #[allow(unused)]
@@ -213,7 +215,7 @@ impl Bilibili {
         ))
     }
 
-    pub async fn get_video(&self) -> Result<HashMap<&'static str, String>> {
+    pub async fn get_video(&self) -> Result<()> {
         let f1 = |j: &serde_json::Value, ret: &mut HashMap<_, _>| -> _ {
             let mut videos = HashMap::new();
             let mut audios = HashMap::new();
@@ -261,6 +263,10 @@ impl Bilibili {
                 );
             }
             ret.insert(
+                "url",
+                videos.iter().max_by_key(|x| x.0).unwrap().1.to_string(),
+            );
+            ret.insert(
                 "url_v",
                 videos.iter().max_by_key(|x| x.0).unwrap().1.to_string(),
             );
@@ -276,40 +282,44 @@ impl Bilibili {
         } else {
             get_cookies_from_browser(&self.ctx.cm.cookies_from_browser, ".bilibili.com").await?
         };
-        let mut ret = HashMap::new();
-        ret.insert("url", "".to_string());
         let client = reqwest::Client::builder()
             .user_agent(crate::utils::gen_ua_safari())
             .connect_timeout(tokio::time::Duration::from_secs(10))
             .build()?;
+
         if matches!(
             self.ctx.cm.bvideo_info.borrow().video_type,
             crate::config::config::BVideoType::Bangumi
         ) {
-            let u = self.ctx.cm.bvideo_info.borrow().base_url.clone();
-            // let (bvid, cid, title, referer, _season_type) = self.get_page_info_ep(&u, page).await?;
-            let (_bvid, cid, title, link) = self.get_page_info_ep(&u).await?;
-            ret.insert("title", title);
-            ret.insert("bili_cid", cid);
+            let (_bvid, cid, title, link) = self.get_page_info_ep(&self.ctx.cm.bvideo_info.borrow().base_url).await?;
+
             let resp =
                 client.get(&link).header("Referer", &link).header("Cookie", cookies).send().await?.text().await?;
             let re = Regex::new(r"const\s*playurlSSRData\s*=\s*(\{.+\})").unwrap();
             let j: serde_json::Value =
                 serde_json::from_str(re.captures(&resp).and_then(|x| x.get(1)).ok_or_else(|| dmlerr!())?.as_str())?;
-            // println!("{:?}", &resp);
             let j = j.pointer("/data/result/video_info").ok_or_else(|| dmlerr!())?;
-            // println!("{:?}", &j);
-            f1(&j, &mut ret)?;
+
+            let mut si = self.ctx.cm.stream_info.borrow_mut();
+            self.ctx.cm.bvideo_info.borrow_mut().current_cid = cid;
+            si.insert("title", title);
+            f1(&j, &mut si)?;
         } else {
-            let u = self.ctx.cm.bvideo_info.borrow().base_url.clone();
             let mut param1 = Vec::new();
             let p = if self.ctx.cm.bvideo_info.borrow().current_page == 0 {
-                "1".to_string()
+                1
             } else {
-                self.ctx.cm.bvideo_info.borrow().current_page.to_string()
+                self.ctx.cm.bvideo_info.borrow().current_page
             };
             param1.push(("p", p));
-            let resp = client.get(&u).header("Cookie", &cookies).query(&param1).send().await?.text().await?;
+            let resp = client
+                .get(&self.ctx.cm.bvideo_info.borrow().base_url)
+                .header("Cookie", &cookies)
+                .query(&param1)
+                .send()
+                .await?
+                .text()
+                .await?;
             let (bvid, cid, title, _artist) = self.get_page_info(&resp).await?;
             // println!("{} {} {} {}", &bvid, &cid, &title, &artist);
             // let re = Regex::new(r"window.__playinfo__\s*=\s*(\{.+?\})\s*</script>").unwrap();
@@ -325,18 +335,21 @@ impl Bilibili {
                 ("fourk", String::from("1")),
             ];
             let query = crate::utils::bili_wbi::encode_wbi(params2, keys);
+
             let j = client
-                .get(format!("{}?{}", BILI_APIV, query))
+                .get(format!("{BILI_APIV}?{query}"))
                 .header("Cookie", &cookies)
                 .send()
                 .await?
                 .json::<serde_json::Value>()
                 .await?;
             let j = j.pointer("/data").ok_or_else(|| dmlerr!())?;
-            ret.insert("title", title);
-            ret.insert("bili_cid", cid);
-            f1(&j, &mut ret)?;
+
+            let mut si = self.ctx.cm.stream_info.borrow_mut();
+            si.insert("title", title);
+            self.ctx.cm.bvideo_info.borrow_mut().current_cid = cid;
+            f1(&j, &mut si)?;
         }
-        Ok(ret)
+        Ok(())
     }
 }

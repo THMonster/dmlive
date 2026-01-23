@@ -1,7 +1,7 @@
 // refer to https://github.com/SeaHOH/ykdl
 use chrono::prelude::*;
 use log::info;
-use std::{collections::HashMap, rc::Rc};
+use std::rc::Rc;
 use uuid::Uuid;
 
 use crate::{dmlerr, dmlive::DMLContext};
@@ -42,8 +42,7 @@ impl Douyu {
         Self { ctx }
     }
 
-    pub async fn get_live(&self) -> anyhow::Result<HashMap<&'static str, String>> {
-        let mut ret = HashMap::new();
+    pub async fn get_live(&self) -> anyhow::Result<()> {
         let rid = self.ctx.cm.room_id.as_str();
         let client = reqwest::Client::new();
 
@@ -80,7 +79,7 @@ impl Douyu {
         // println!("{:?}", &param1);
 
         let resp = client
-            .post(format!("{}{}", DOUYU_API3, &rid))
+            .post(format!("{DOUYU_API3}{rid}"))
             .header("User-Agent", crate::utils::gen_ua())
             .header("Referer", format!("https://www.douyu.com/{rid}"))
             .form(&param1)
@@ -89,7 +88,11 @@ impl Douyu {
             .json::<serde_json::Value>()
             .await?;
         // println!("{:?}", &resp);
-        ret.insert(
+
+        let room_info = get_live_info(&client, rid).await?;
+
+        let mut si = self.ctx.cm.stream_info.borrow_mut();
+        si.insert(
             "url",
             format!(
                 "{}/{}",
@@ -97,10 +100,9 @@ impl Douyu {
                 resp.pointer("/data/rtmp_live").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?
             ),
         );
-
-        let room_info = get_live_info(&client, rid).await?;
-        ret.insert("title", format!("{} - {}", room_info.1, room_info.0));
-
-        Ok(ret)
+        si.insert("owner_name", room_info.0);
+        si.insert("title", room_info.1);
+        si.insert("cover", room_info.2);
+        Ok(())
     }
 }

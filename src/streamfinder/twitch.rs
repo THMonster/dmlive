@@ -1,7 +1,7 @@
 use crate::{dmlerr, dmlive::DMLContext};
 use log::info;
 use regex::Regex;
-use std::{collections::HashMap, rc::Rc};
+use std::rc::Rc;
 
 const TTV_API1: &'static str = "https://gql.twitch.tv/gql";
 const TTV_API2: &'static str = "https://usher.ttvnw.net/api/channel/hls/{channel}.m3u8";
@@ -46,14 +46,12 @@ impl Twitch {
         Self { ctx }
     }
 
-    pub async fn get_live(&self) -> anyhow::Result<HashMap<&'static str, String>> {
+    pub async fn get_live(&self) -> anyhow::Result<()> {
         let client = reqwest::Client::new();
-        let mut ret = HashMap::new();
 
         let rid = self.ctx.cm.room_id.as_str();
         let room_info = get_live_info(&client, rid).await?;
         room_info.3.then(|| 0).ok_or_else(|| dmlerr!())?;
-        ret.insert("title", format!("{} - {}", room_info.1, room_info.0));
         let mut param1 = Vec::new();
         let payload = format!(
             r#"{{"query": "query {{ streamPlaybackAccessToken(channelName: \"{rid}\", params: {{ platform: \"web\", playerBackend:\"mediaplayer\", playerType:\"pulsar\" }}) {{ value, signature }} }}"}}"#,
@@ -105,7 +103,12 @@ impl Twitch {
             .max_by_key(|x| x.0.parse::<i64>().unwrap_or(0))
             .ok_or_else(|| dmlerr!())?
             .1;
-        ret.insert("url", url.to_string());
-        Ok(ret)
+
+        let mut si = self.ctx.cm.stream_info.borrow_mut();
+        si.insert("owner_name", room_info.0);
+        si.insert("title", room_info.1);
+        si.insert("cover", room_info.2);
+        si.insert("url", url.to_string());
+        Ok(())
     }
 }
