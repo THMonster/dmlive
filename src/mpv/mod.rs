@@ -66,16 +66,15 @@ impl MpvControl {
                 si["url_v"]
             )
         };
-        info!("load video: {}--{}", &edl, self.ctx.cm.title.borrow());
+        info!("load video: {edl}--{}", self.ctx.cm.title.borrow());
         self.mpv_command_tx
             .send(format!(
-                "{{ \"command\": [\"loadfile\", \"{}\"], \"async\": true }}\n",
-                &edl
+                r#"{{ "command": ["loadfile", "{edl}"], "async": true }}"#,
             ))
             .await?;
         self.mpv_command_tx
             .send(format!(
-                "{{ \"command\": [\"set_property\", \"force-media-title\", \"{}\"] }}\n",
+                r#"{{ "command": ["set_property", "force-media-title", "{}"] }}"#,
                 self.ctx.cm.title.borrow().replace(r#"""#, r#"\""#)
             ))
             .await?;
@@ -88,7 +87,7 @@ impl MpvControl {
         } else {
             self.mpv_command_tx
                 .send(format!(
-                    "{{ \"command\": [\"loadfile\", \"{}\"] }}\n",
+                    r#"{{ "command": ["loadfile", "{}"] }}"#,
                     self.ctx.im.get_f2m_socket_path()
                 ))
                 .await?;
@@ -96,13 +95,8 @@ impl MpvControl {
         Ok(())
     }
 
-    // pub async fn quit(&self) -> Result<()> {
-    //     self.mpv_command_tx.send("{ \"command\": [\"quit\"] }\n".into()).await?;
-    //     Ok(())
-    // }
-
     pub async fn stop(&self) -> Result<()> {
-        self.mpv_command_tx.send("{ \"command\": [ \"stop\" ] }\n".into()).await?;
+        self.mpv_command_tx.send(r#"{ "command": [ "stop" ] }"#.to_string()).await?;
         Ok(())
     }
 
@@ -115,9 +109,8 @@ impl MpvControl {
                 { "command": ["keybind", "alt+i", "script-message dml:nick"] }
                 { "command": ["keybind", "alt+b", "script-message dml:back"] }
                 { "command": ["keybind", "alt+n", "script-message dml:next"] }
-                { "command": ["keybind", "alt+f", "script-message dml:fps"] }
-                "#
-                .into(),
+                { "command": ["keybind", "alt+f", "script-message dml:fps"] }"#
+                    .to_string(),
             )
             .await?;
 
@@ -132,12 +125,10 @@ impl MpvControl {
                 let h = j.pointer("/data/h").and_then(|x| x.as_u64()).ok_or_else(|| dmlerr!())?;
                 if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
                     let _ = self.ctx.mtx.send(DMLMessage::SetVideoInfo((w, h, 0))).await;
-                    self.mpv_command_tx
-                        .send("{ \"command\": [\"sub-remove\", 1], \"async\": true }\n".to_string())
-                        .await?;
+                    self.mpv_command_tx.send(r#"{ "command": ["sub-remove", 1], "async": true }"#.to_string()).await?;
                     self.mpv_command_tx
                         .send(format!(
-                            "{{ \"command\": [\"sub-add\", \"{}\"], \"async\": true }}\n",
+                            r#"{{ "command": ["sub-add", "{}"], "async": true }}"#,
                             self.ctx.im.get_danmaku_socket_path()
                         ))
                         .await?;
@@ -152,9 +143,7 @@ impl MpvControl {
                 if let Some(it) = j.pointer("/data").and_then(|x| x.as_f64()) {
                     if self.ctx.cm.display_fps.get().1 == 0 && it < 59.0 {
                         self.mpv_command_tx
-                            .send(
-                                "{ \"command\": [\"set_property\", \"vf\", \"fps=fps=60:round=near\"] }\n".to_string(),
-                            )
+                            .send(r#"{ "command": ["set_property", "vf", "fps=fps=60:round=near"] }"#.to_string())
                             .await?;
                     }
                 }
@@ -180,11 +169,10 @@ impl MpvControl {
             let _ = self
                 .mpv_command_tx
                 .send(
-                    r#"{ "command": ["get_property", "video-params"], "request_id": 114, "async": true } }
+                    r#"{ "command": ["get_property", "video-params"], "request_id": 114, "async": true }
                     { "command": ["get_property", "display-fps"], "request_id": 514, "async": true }
-                    { "command": ["get_property", "container-fps"], "request_id": 1919, "async": true }
-                    "#
-                    .into(),
+                    { "command": ["get_property", "container-fps"], "request_id": 1919, "async": true }"#
+                        .to_string(),
                 )
                 .await;
         } else if event.eq("client-message") {
@@ -246,19 +234,11 @@ impl MpvControl {
                     [df.0, 0u64, 60u64][i]
                 };
                 if fps == 0 {
-                    self.mpv_command_tx
-                        .send(
-                            r#"{ "command": ["set_property", "vf", ""] }
-                            "#
-                            .into(),
-                        )
-                        .await?;
+                    self.mpv_command_tx.send(r#"{ "command": ["set_property", "vf", ""] }"#.into()).await?;
                 } else {
                     self.mpv_command_tx
                         .send(format!(
-                            r#"{{ "command": ["set_property", "vf", "fps=fps={}:round=near"] }}
-                        "#,
-                            fps
+                            r#"{{ "command": ["set_property", "vf", "fps=fps={fps}:round=near"] }}"#,
                         ))
                         .await?;
                 }
@@ -275,7 +255,8 @@ impl MpvControl {
         let s = UnixStream::connect(self.ctx.im.get_mpv_socket_path()).await?;
         let (usocket_read, mut usocket_write) = tokio::io::split(s);
         let mpv_rpc_write_task = async {
-            while let Ok(s) = self.mpv_command_rx.recv().await {
+            while let Ok(mut s) = self.mpv_command_rx.recv().await {
+                s.push('\n');
                 let _ = usocket_write.write_all(s.as_bytes()).await;
             }
         };
@@ -286,29 +267,20 @@ impl MpvControl {
                 tokio::select! {
                     Some(_) = tasks.next() => {},
                     msg = reader.next_line() => {
-                        match msg {
-                            Ok(it) => { tasks.push(self.handle_mpv_event(it.unwrap_or("".to_string()))); },
-                            Err(_) => { return; },
+                        if let Some(it) = msg? {
+                            tasks.push(self.handle_mpv_event(it));
                         }
                     }
                 }
             }
+            #[allow(unreachable_code)]
+            anyhow::Ok(())
         };
         let _ = self.init_mpv_rpc().await;
         tokio::select! {
             _ = mpv_rpc_write_task => {},
             _ = mpv_rpc_read_task => {},
             _ = mpv.wait() => {},
-        }
-        Ok(())
-    }
-
-    pub async fn run_android(&self) -> Result<()> {
-        // Command::new("termux-open").arg(self.ipc_manager.get_f2m_socket_path()).spawn().unwrap();
-        while let Ok(s) = self.mpv_command_rx.recv().await {
-            if s.contains("quit") {
-                break;
-            }
         }
         Ok(())
     }

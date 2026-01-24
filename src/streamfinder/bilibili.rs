@@ -134,14 +134,13 @@ impl Bilibili {
         ));
     }
 
-    pub async fn get_page_info_ep(&self, video_url: &str) -> Result<(String, String, String, String)> {
+    pub async fn get_page_info_ep(&self) -> Result<(String, String, String, String)> {
         let mut page = self.ctx.cm.bvideo_info.borrow().current_page;
         let client = reqwest::Client::builder()
             .user_agent(crate::utils::gen_ua_safari())
             .connect_timeout(tokio::time::Duration::from_secs(10))
             .build()?;
-        let epid =
-            url::Url::parse(video_url)?.path_segments().and_then(|x| x.last()).ok_or_else(|| dmlerr!())?.to_string();
+        let epid = self.ctx.cm.room_id.as_str();
         let mut param1 = Vec::new();
         if epid.starts_with("ep") {
             param1.push(("ep_id", epid.replace("ep", "")));
@@ -149,6 +148,7 @@ impl Bilibili {
             param1.push(("season_id", epid.replace("ss", "")));
         }
         let resp = client.get(BILI_APIV_EP_LIST).query(&param1).send().await?.json::<serde_json::Value>().await?;
+
         let eplist = resp.pointer("/result/episodes").and_then(|x| x.as_array()).ok_or_else(|| dmlerr!())?;
         if page == 0 {
             page = 1;
@@ -175,7 +175,7 @@ impl Bilibili {
         let title = ep.pointer("/share_copy").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?.to_string();
         let link = ep.pointer("/link").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?.to_string();
 
-        Ok((bvid, cid, format!("{} - {}", &title, page), link))
+        Ok((bvid, cid, format!("{title} - {page}"), link))
     }
 
     pub async fn get_page_info(&self, html: &str) -> Result<(String, String, String, String)> {
@@ -201,10 +201,10 @@ impl Bilibili {
 
         let cid = p.pointer("/cid").and_then(|x| x.as_u64()).ok_or_else(|| dmlerr!())?;
         let final_title = if j.len() == 1 {
-            format!("{} - {}", title, artist)
+            format!("{title} - {artist}")
         } else {
             let subtitle = p.pointer("/part").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?;
-            format!("{} - {} - {} - {}", title, page, subtitle, artist)
+            format!("{title} - {page} - {subtitle} - {artist}")
         };
 
         Ok((
@@ -291,7 +291,7 @@ impl Bilibili {
             self.ctx.cm.bvideo_info.borrow().video_type,
             crate::config::config::BVideoType::Bangumi
         ) {
-            let (_bvid, cid, title, link) = self.get_page_info_ep(&self.ctx.cm.bvideo_info.borrow().base_url).await?;
+            let (_bvid, cid, title, link) = self.get_page_info_ep().await?;
 
             let resp =
                 client.get(&link).header("Referer", &link).header("Cookie", cookies).send().await?.text().await?;
