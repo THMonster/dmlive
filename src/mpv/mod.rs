@@ -221,11 +221,11 @@ impl MpvControl {
             if cmds.back {
                 let p = self.ctx.cm.bvideo_info.borrow().current_page.saturating_sub(1);
                 self.ctx.cm.bvideo_info.borrow_mut().current_page = if p == 0 { 1 } else { p };
-                let _ = self.ctx.mtx.send(DMLMessage::PlayVideo).await;
+                self.stop().await?;
             }
             if cmds.next {
                 self.ctx.cm.bvideo_info.borrow_mut().current_page += 1;
-                let _ = self.ctx.mtx.send(DMLMessage::PlayVideo).await;
+                self.stop().await?;
             }
             if cmds.fps {
                 let fps: u64 = {
