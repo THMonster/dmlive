@@ -125,6 +125,7 @@ impl FfmpegControl {
                         "Referer: https://www.bilibili.com/",
                     ]);
                     let si = self.ctx.cm.stream_info.borrow();
+                    info!("{si:?}");
                     ret.arg("-i").arg(&si["url_v"]);
                     ret.args(&[
                         "-user_agent",

@@ -167,11 +167,14 @@ impl DMLive {
                 self.record_live().await?;
             } else if mode == 3 {
                 self.record_video().await?;
+                break;
             } else {
                 self.record_danmaku().await?;
+                break;
             }
             tokio::time::sleep(Duration::from_millis(2000)).await;
         }
+        Ok(())
     }
 
     pub async fn play_live_old(&self) -> anyhow::Result<()> {
@@ -314,6 +317,7 @@ impl DMLive {
 
     pub async fn record_video(&self) -> anyhow::Result<()> {
         self.sf.run().await?;
+        self.ctx.cm.set_stream_type();
         *self.ctx.cm.title.borrow_mut() = self.ctx.cm.stream_info.borrow()["title"].to_string();
 
         let record_task = async {

@@ -88,13 +88,5 @@ pub fn _str_to_ms(time_str: &str) -> u64 {
 
 pub async fn is_android() -> bool {
     let output = Command::new("getprop").arg("ro.build.version.release").output();
-    match output.await {
-        Ok(it) => {
-            if it.status.success() {
-                return true;
-            }
-        }
-        Err(_) => {}
-    };
-    false
+    output.await.map(|x| x.status.success()).unwrap_or(false)
 }

@@ -289,7 +289,7 @@ impl MpvControl {
                 Platform::Android => 1,
                 _ => 0,
             },
-            crate::config::RunMode::Record => 0,
+            crate::config::RunMode::Record => 1,
         };
         if mode == 0 {
             self.run_normal().await?;

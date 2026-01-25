@@ -37,6 +37,7 @@ impl Baha {
         let sn = ep.pointer("/videoSn").ok_or_else(|| dmlerr!())?.as_u64().unwrap().to_string();
         let len = title.len() - 3;
 
+        self.ctx.cm.bvideo_info.borrow_mut().last_page = episodes.len();
         self.ctx.cm.bvideo_info.borrow_mut().current_cid = sn;
         let mut si = self.ctx.cm.stream_info.borrow_mut();
         si.insert(
