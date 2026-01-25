@@ -168,6 +168,7 @@ impl Bilibili {
                 eplist.last().ok_or_else(|| dmlerr!())?
             }
         };
+        self.ctx.cm.bvideo_info.borrow_mut().last_page = eplist.len();
         self.ctx.cm.bvideo_info.borrow_mut().current_page = page;
 
         let bvid = ep.pointer("/bvid").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?.to_string();
@@ -197,6 +198,7 @@ impl Bilibili {
                 j.last().ok_or_else(|| dmlerr!())?
             }
         };
+        self.ctx.cm.bvideo_info.borrow_mut().last_page = j.len();
         self.ctx.cm.bvideo_info.borrow_mut().current_page = page;
 
         let cid = p.pointer("/cid").and_then(|x| x.as_u64()).ok_or_else(|| dmlerr!())?;

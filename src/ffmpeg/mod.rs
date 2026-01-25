@@ -257,15 +257,6 @@ impl FfmpegControl {
             anyhow::Ok(())
         };
 
-        let quit_task = async {
-            self.quit_notify.notified().await;
-            if let Some(mut i) = ffstdin.take() {
-                i.write_all("q\n".as_bytes()).await?;
-            }
-            self.quited_notify.notify_one();
-            anyhow::Ok(())
-        };
-
         let _ = tokio::join!(ff.wait(), ff_task, self.get_video_info(ffstderr));
         Ok(())
     }

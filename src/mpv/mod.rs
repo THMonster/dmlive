@@ -95,8 +95,9 @@ impl MpvControl {
         Ok(())
     }
 
-    pub async fn stop(&self) -> Result<()> {
+    pub async fn restart(&self) -> Result<()> {
         self.mpv_command_tx.send(r#"{ "command": [ "stop" ] }"#.to_string()).await?;
+        self.ctx.mtx.send(DMLMessage::RequestRestart).await?;
         Ok(())
     }
 
@@ -152,15 +153,12 @@ impl MpvControl {
         }
         let event = j.pointer("/event").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?;
         if event.eq("end-file") {
-            match self.ctx.cm.site_type {
-                crate::config::SiteType::Live => {
-                    self.ctx.mtx.send(DMLMessage::RequestRestart).await?;
-                }
-                crate::config::SiteType::Video => {
-                    info!("{j:?}");
-                    if j.pointer("/reason").and_then(|x| x.as_str()).eq(&Some("eof")) {
-                        self.ctx.cm.bvideo_info.borrow_mut().current_page += 1;
-                    }
+            info!("{j:?}");
+            if j.pointer("/reason").and_then(|x| x.as_str()).eq(&Some("eof")) {
+                let mut bvi = self.ctx.cm.bvideo_info.borrow_mut();
+                if bvi.current_page < bvi.last_page {
+                    bvi.current_page += 1;
+                    drop(bvi);
                     self.ctx.mtx.send(DMLMessage::RequestRestart).await?;
                 }
             }
@@ -184,7 +182,7 @@ impl MpvControl {
             let cmds =
                 cmdparser::CmdParser::new(j.pointer("/args/0").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?);
             if cmds.restart {
-                self.stop().await?;
+                self.restart().await?;
             }
             if cmds.fs.is_some() {
                 let _ = self.ctx.mtx.send(DMLMessage::SetFontScale(cmds.fs.unwrap())).await;
@@ -221,11 +219,11 @@ impl MpvControl {
             if cmds.back {
                 let p = self.ctx.cm.bvideo_info.borrow().current_page.saturating_sub(1);
                 self.ctx.cm.bvideo_info.borrow_mut().current_page = if p == 0 { 1 } else { p };
-                self.stop().await?;
+                self.restart().await?;
             }
             if cmds.next {
                 self.ctx.cm.bvideo_info.borrow_mut().current_page += 1;
-                self.stop().await?;
+                self.restart().await?;
             }
             if cmds.fps {
                 let fps: u64 = {

@@ -127,6 +127,7 @@ impl ConfigManager {
             base_url: "".to_string(),
             video_type: BVideoType::Video,
             current_page: 0,
+            last_page: usize::MAX,
             current_cid: "".to_string(),
             plist: Vec::new(),
         };

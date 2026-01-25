@@ -23,6 +23,7 @@ pub struct BVideoInfo {
     pub base_url: String,
     pub video_type: BVideoType,
     pub current_page: usize,
+    pub last_page: usize,
     pub current_cid: String,
     pub plist: Vec<String>,
 }
