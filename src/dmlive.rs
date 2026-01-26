@@ -280,8 +280,10 @@ impl DMLive {
             self.quit_notify.1.set(false);
         };
         self.mc.reload_edl_video().await?;
-        let (_, r2) = tokio::join!(watchdog, self.dm.run());
-        r2?;
+        tokio::select! {
+            _ = watchdog => {},
+            it = self.dm.run() => {it?},
+        }
         Ok(())
     }
 
@@ -327,10 +329,11 @@ impl DMLive {
             self.fc.write_record_task().await?;
             anyhow::Ok(())
         };
-        let (r1, r2, r3) = tokio::join!(self.dm.run(), record_task, self.fc.run());
-        r1?;
-        r2?;
-        r3?;
+        tokio::select! {
+            it = record_task => {it?},
+            it = self.fc.run() => {it?},
+            it = self.dm.run() => {it?},
+        }
         Ok(())
     }
 
@@ -341,9 +344,10 @@ impl DMLive {
         // because there is no video to determine the ratio
         self.dm.ready_notify.0.notify_one();
 
-        let (r1, r2) = tokio::join!(self.dm.run(), self.fc.write_danmaku_only_task());
-        r1?;
-        r2?;
+        tokio::select! {
+            it = self.fc.write_danmaku_only_task() => {it?},
+            it = self.dm.run() => {it?},
+        }
         Ok(())
     }
 }

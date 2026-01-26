@@ -449,7 +449,8 @@ impl Danmaku {
         let (r1, r2) = tokio::join!(self.danmaku_client_task(dtx), t1);
         r1?;
         r2?;
-        info!("danmaku exited");
+        info!("danmaku finished");
+        std::future::pending::<()>().await;
         Ok(())
     }
 }
