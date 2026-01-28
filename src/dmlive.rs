@@ -74,13 +74,10 @@ impl DMLive {
         tokio::select! {
             _ = self.dispatch_task() => {},
             _ = self.mc.run() => {},
-            _ = self.start() => {},
+            r = self.start() => { let _ = r.map_err(|e| info!("dmlive error: {e}")); },
             _ = signal_task => {},
         }
-        match self.ctx.im.stop().await {
-            Ok(_) => {}
-            Err(err) => info!("ipc manager stop error: {err}"),
-        };
+        let _ = self.ctx.im.stop().await.map_err(|e| info!("ipc manager stop error: {e}"));
     }
 
     async fn dispatch_task(&self) {
@@ -161,16 +158,16 @@ impl DMLive {
         };
         loop {
             if mode == 0 {
-                let _ = self.play_live().await.map_err(|e| warn!("play live error: {e}"));
+                let _ = self.play_live().await?;
             } else if mode == 1 {
-                let _ = self.play_video().await.map_err(|e| warn!("play video error: {e}"));
+                let _ = self.play_video().await?;
             } else if mode == 2 {
-                let _ = self.record_live().await.map_err(|e| warn!("record live error: {e}"));
+                let _ = self.record_live().await?;
             } else if mode == 3 {
-                let _ = self.record_video().await.map_err(|e| warn!("record video error: {e}"));
+                let _ = self.record_video().await?;
                 break;
             } else {
-                let _ = self.record_danmaku().await.map_err(|e| warn!("record danmaku error: {e}"));
+                let _ = self.record_danmaku().await?;
                 break;
             }
             self.quit_notify.1.set(false);
@@ -207,7 +204,8 @@ impl DMLive {
             self.fc.run(),
             self.dm.run(),
             self.st.run()
-        )?;
+        )
+        .map_err(|e| warn!("play live error: {e}"));
         // tokio::select! {
         //     _ = watchdog => {},
         //     it = mpv_task => {it?},
@@ -229,7 +227,8 @@ impl DMLive {
             anyhow::Ok(())
         };
         self.mc.reload_edl_video().await?;
-        let _ = tokio::try_join!(watchdog, self.dm.run(), self.mc.reload_edl_video())?;
+        let _ = tokio::try_join!(watchdog, self.dm.run(), self.mc.reload_edl_video())
+            .map_err(|e| warn!("play video error: {e}"));
         Ok(())
     }
 
@@ -253,13 +252,15 @@ impl DMLive {
             self.fc.write_record_task().await?;
             anyhow::Ok(())
         };
+
         let _ = tokio::try_join!(
             watchdog,
             record_task,
             self.fc.run(),
             self.dm.run(),
             self.st.run()
-        )?;
+        )
+        .map_err(|e| warn!("record live error: {e}"));
         Ok(())
     }
 
@@ -275,7 +276,7 @@ impl DMLive {
             self.fc.write_record_task().await?;
             anyhow::Ok(())
         };
-        let _ = tokio::try_join!(record_task, self.fc.run(), self.dm.run())?;
+        let _ = tokio::try_join!(record_task, self.fc.run(), self.dm.run());
         Ok(())
     }
 
