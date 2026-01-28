@@ -1,12 +1,13 @@
 use async_channel::{Receiver, Sender};
 use futures::StreamExt;
-use log::info;
+use log::{info, warn};
 use std::{cell::Cell, rc::Rc};
 use tokio::{sync::Notify, time::Duration};
 
 use crate::{
     config::{ConfigManager, RecordMode, RunMode, SiteType},
     danmaku::Danmaku,
+    dmlerr,
     ffmpeg::FfmpegControl,
     ipcmanager::IPCManager,
     mpv::MpvControl,
@@ -160,84 +161,25 @@ impl DMLive {
         };
         loop {
             if mode == 0 {
-                self.play_live().await?;
+                let _ = self.play_live().await.map_err(|e| warn!("play live error: {e}"));
             } else if mode == 1 {
-                self.play_video().await?;
+                let _ = self.play_video().await.map_err(|e| warn!("play video error: {e}"));
             } else if mode == 2 {
-                self.record_live().await?;
+                let _ = self.record_live().await.map_err(|e| warn!("record live error: {e}"));
             } else if mode == 3 {
-                self.record_video().await?;
+                let _ = self.record_video().await.map_err(|e| warn!("record video error: {e}"));
                 break;
             } else {
-                self.record_danmaku().await?;
+                let _ = self.record_danmaku().await.map_err(|e| warn!("record danmaku error: {e}"));
                 break;
             }
+            self.quit_notify.1.set(false);
+            self.ready2play_notify.1.set(false);
+            self.dm.ready_notify.1.set(false);
             tokio::time::sleep(Duration::from_millis(2000)).await;
         }
         Ok(())
     }
-
-    pub async fn play_live_old(&self) -> anyhow::Result<()> {
-        self.sf.run().await?;
-        self.ctx.cm.set_stream_type();
-        // *self.ctx.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
-        *self.ctx.cm.title.borrow_mut() = format!(
-            "{} - {}",
-            self.ctx.cm.stream_info.borrow()["title"],
-            self.ctx.cm.stream_info.borrow()["owner_name"]
-        );
-        // self.ctx.cm.bvideo_info.borrow_mut().current_cid = stream_info.remove("bili_cid").unwrap_or("".to_string());
-        let ff_task = async {
-            // self.fc.run(&stream_info).await?;
-            anyhow::Ok(())
-        };
-        let streamer_task = async {
-            let _ = self.st.run().await.map_err(|e| info!("streamer error: {}", e));
-            self.fc.quit().await?;
-            anyhow::Ok(())
-        };
-        if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
-            ff_task.await?;
-        } else {
-            let (_ff_res, _st_res) = tokio::join!(ff_task, streamer_task);
-        }
-        Ok(())
-    }
-
-    // pub async fn play_video(&self) -> anyhow::Result<()> {
-    //     let mut stream_info = self.sf.run().await?;
-    //     self.ctx.cm.set_stream_type();
-    //     *self.ctx.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
-    //     self.ctx.cm.bvideo_info.borrow_mut().current_cid = stream_info.remove("bili_cid").unwrap_or("".to_string());
-    //     // self.dm.set_bili_video_cid(stream_info.get("bili_cid").unwrap_or(&"".to_string())).await;
-    //     self.mc.reload_edl_video(&stream_info).await?;
-    //     Ok(())
-    // }
-
-    // pub async fn download_danmaku(&self) -> anyhow::Result<()> {
-    //     let mut stream_info = self.sf.run().await?;
-    //     *self.ctx.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
-    //     self.ctx.cm.bvideo_info.borrow_mut().current_cid = stream_info.remove("bili_cid").unwrap_or("".to_string());
-    //     // self.dm.set_bili_video_cid(stream_info.get("bili_cid").unwrap_or(&"".to_string())).await;
-    //     let ff_task = async {
-    //         self.fc.write_danmaku_only_task().await?;
-    //         anyhow::Ok(())
-    //     };
-    //     let danmaku_task = async {
-    //         match self.ctx.cm.site {
-    //             crate::config::Site::BiliVideo => {
-    //                 // let _ = self.dm.run_bilivideo(1.0).await;
-    //             }
-    //             crate::config::Site::BahaVideo => {
-    //                 // let _ = self.dm.run_baha().await;
-    //             }
-    //             _ => todo!(),
-    //         }
-    //         anyhow::Ok(())
-    //     };
-    //     let (_ff_res, _st_res) = tokio::join!(ff_task, danmaku_task);
-    //     Ok(())
-    // }
 
     pub async fn play_live(&self) -> anyhow::Result<()> {
         let _ = self.sf.run().await?;
@@ -250,23 +192,29 @@ impl DMLive {
         let watchdog = async {
             self.quit_notify.1.set(true);
             self.quit_notify.0.notified().await;
-            self.quit_notify.1.set(false);
+            Err(anyhow::anyhow!("watchdog exited!"))?;
+            anyhow::Ok(())
         };
         let mpv_task = async {
             self.ready2play_notify.1.set(true);
             self.ready2play_notify.0.notified().await;
-            self.ready2play_notify.1.set(false);
             self.mc.reload_video().await?;
-            std::future::pending::<()>().await;
             anyhow::Ok(())
         };
-        tokio::select! {
-            _ = watchdog => {},
-            it = mpv_task => {it?},
-            it = self.fc.run() => {it?},
-            it = self.dm.run() => {it?},
-            it = self.st.run() => {it?},
-        }
+        let _ = tokio::try_join!(
+            watchdog,
+            mpv_task,
+            self.fc.run(),
+            self.dm.run(),
+            self.st.run()
+        )?;
+        // tokio::select! {
+        //     _ = watchdog => {},
+        //     it = mpv_task => {it?},
+        //     it = self.fc.run() => {it?},
+        //     it = self.dm.run() => {it?},
+        //     it = self.st.run() => {it?},
+        // }
         Ok(())
     }
 
@@ -277,13 +225,11 @@ impl DMLive {
         let watchdog = async {
             self.quit_notify.1.set(true);
             self.quit_notify.0.notified().await;
-            self.quit_notify.1.set(false);
+            Err(anyhow::anyhow!("watchdog exited!"))?;
+            anyhow::Ok(())
         };
         self.mc.reload_edl_video().await?;
-        tokio::select! {
-            _ = watchdog => {},
-            it = self.dm.run() => {it?},
-        }
+        let _ = tokio::try_join!(watchdog, self.dm.run(), self.mc.reload_edl_video())?;
         Ok(())
     }
 
@@ -298,22 +244,22 @@ impl DMLive {
         let watchdog = async {
             self.quit_notify.1.set(true);
             self.quit_notify.0.notified().await;
-            self.quit_notify.1.set(false);
+            Err(anyhow::anyhow!("watchdog exited!"))?;
+            anyhow::Ok(())
         };
         let record_task = async {
             self.ready2play_notify.1.set(true);
             self.ready2play_notify.0.notified().await;
-            self.ready2play_notify.1.set(false);
             self.fc.write_record_task().await?;
             anyhow::Ok(())
         };
-        tokio::select! {
-            _ = watchdog => {},
-            it = record_task => {it?},
-            it = self.fc.run() => {it?},
-            it = self.dm.run() => {it?},
-            it = self.st.run() => {it?},
-        }
+        let _ = tokio::try_join!(
+            watchdog,
+            record_task,
+            self.fc.run(),
+            self.dm.run(),
+            self.st.run()
+        )?;
         Ok(())
     }
 
@@ -329,11 +275,7 @@ impl DMLive {
             self.fc.write_record_task().await?;
             anyhow::Ok(())
         };
-        tokio::select! {
-            it = record_task => {it?},
-            it = self.fc.run() => {it?},
-            it = self.dm.run() => {it?},
-        }
+        let _ = tokio::try_join!(record_task, self.fc.run(), self.dm.run())?;
         Ok(())
     }
 
@@ -344,10 +286,7 @@ impl DMLive {
         // because there is no video to determine the ratio
         self.dm.ready_notify.0.notify_one();
 
-        tokio::select! {
-            it = self.fc.write_danmaku_only_task() => {it?},
-            it = self.dm.run() => {it?},
-        }
+        let _ = tokio::try_join!(self.fc.write_danmaku_only_task(), self.dm.run())?;
         Ok(())
     }
 }

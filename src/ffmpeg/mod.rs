@@ -259,6 +259,6 @@ impl FfmpegControl {
         };
 
         let _ = tokio::join!(ff.wait(), ff_task, self.get_video_info(ffstderr));
-        Ok(())
+        Err(anyhow::anyhow!("ffmpeg control exited."))
     }
 }
