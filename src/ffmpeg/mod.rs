@@ -25,6 +25,19 @@ impl FfmpegControl {
             ff_stdin: RefCell::new(None),
         }
     }
+
+    fn get_ffmpeg_bin() -> String {
+        if cfg!(target_os = "macos") {
+            if let Some(path) = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"]
+                .into_iter()
+                .find(|p| std::path::Path::new(p).exists()) 
+            {
+                return path.to_string();
+            }
+        }
+        "ffmpeg".to_string()
+    }
+
     pub async fn write_danmaku_only_task(&self) -> Result<()> {
         let in_stream = self.ctx.im.get_danmaku_socket_path();
         let max_len = match self.ctx.cm.title.borrow().char_indices().nth(70) {
@@ -37,7 +50,7 @@ impl FfmpegControl {
             self.ctx.cm.title.borrow()[..max_len].replace('/', "-"),
             now.format("%F %T")
         );
-        let mut cmd = Command::new("ffmpeg");
+        let mut cmd = Command::new(get_ffmpeg_bin());
         cmd.args(["-y", "-hide_banner", "-nostdin"]);
         cmd.arg("-i");
         cmd.arg(&in_stream);
@@ -65,7 +78,7 @@ impl FfmpegControl {
             self.ctx.cm.title.borrow()[..max_len].replace('/', "-"),
             now.format("%F %T")
         );
-        let mut cmd = Command::new("ffmpeg");
+        let mut cmd = Command::new(get_ffmpeg_bin());
         cmd.args(["-y", "-hide_banner", "-nostdin"]);
         cmd.arg("-i");
         cmd.arg(&in_stream);
@@ -82,7 +95,7 @@ impl FfmpegControl {
     }
 
     pub fn create_pre_ff_command(&self) -> Result<Command> {
-        let mut ret = Command::new("ffmpeg");
+        let mut ret = Command::new(get_ffmpeg_bin());
         ret.args(["-y", "-xerror"]);
         ret.arg("-hide_banner");
         ret.arg("-nostats");
@@ -97,7 +110,7 @@ impl FfmpegControl {
     }
 
     pub fn create_ff_command(&self, stream_info: &HashMap<&str, String>) -> Result<Command> {
-        let mut ret = Command::new("ffmpeg");
+        let mut ret = Command::new(get_ffmpeg_bin());
         ret.args(["-y", "-xerror"]);
         ret.arg("-hide_banner");
         ret.arg("-nostats");
