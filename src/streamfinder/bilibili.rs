@@ -246,7 +246,7 @@ impl Bilibili {
                     ul.iter().find(|&&x| !x.contains("mcdn")).ok_or_else(|| dmlerr!())?.to_string(),
                 );
             }
-            if let Some(ele) = j.pointer("/dash/flac/audio") {
+            if let Some(ele) = j.pointer("/dash/flac/audio").filter(|x| !x.is_null()) {
                 let mut ul = Vec::new();
                 ul.push(ele.pointer("/base_url").and_then(|x| x.as_str()).ok_or_else(|| dmlerr!())?);
                 ele.pointer("/backup_url")
