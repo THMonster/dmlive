@@ -12,6 +12,14 @@ impl Bilibili {
     }
 
     pub async fn run(&self, url: &str, dtx: async_channel::Sender<DMLDanmaku>) -> anyhow::Result<()> {
+        for dml_dm in self.fetch(url).await? {
+            dtx.send(dml_dm).await?;
+        }
+        dtx.close();
+        Ok(())
+    }
+
+    pub async fn fetch(&self, url: &str) -> anyhow::Result<Vec<DMLDanmaku>> {
         let client = reqwest::Client::builder()
             .deflate(false)
             .user_agent(crate::utils::gen_ua())
@@ -30,6 +38,7 @@ impl Bilibili {
         let buf = String::from_utf8_lossy(&dp);
         let doc = roxmltree::Document::parse(&buf)?;
         let elem_dm: Vec<roxmltree::Node> = doc.descendants().filter(|n| n.tag_name().name() == "d").collect();
+        let mut danmaku = Vec::with_capacity(elem_dm.len());
         for e in elem_dm {
             if e.has_attribute("p") {
                 let tmps: Vec<&str> = e.attribute("p").unwrap().split(',').collect();
@@ -50,16 +59,9 @@ impl Bilibili {
                     color: color.to_string(),
                     position,
                 };
-                dtx.send(dml_dm).await?;
-                // dtx.send((
-                //     format!("{:06x}", tmps[3].parse::<u64>().unwrap_or(16777215)),
-                //     format!("{},{}", tmps[0], tmps[1]),
-                //     e.text().unwrap_or("").into(),
-                // ))
-                // .await?;
+                danmaku.push(dml_dm);
             }
         }
-        dtx.close();
-        Ok(())
+        Ok(danmaku)
     }
 }
