@@ -600,7 +600,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     path,
                     title: "弹幕".into(),
                     language: "und".into(),
-                    selected: subtitle_events.is_none(),
+                    selected: false,
                 }),
                 Err(error) => log::warn!("failed to write danmaku ASS track: {error}"),
             }
@@ -611,16 +611,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 subtitle.title,
                 if subtitle.is_ai { "（AI）" } else { "" }
             );
-            let path = directory.join(format!("{prefix}-subtitle.ass"));
-            match Self::write_ass(&path, document).await {
-                Ok(()) => tracks.push(SubtitleTrackFile {
-                    path,
-                    title: format!("字幕 · {label}"),
-                    language: subtitle.language.clone(),
-                    selected: danmaku_events.is_none(),
-                }),
-                Err(error) => log::warn!("failed to write subtitle ASS track: {error}"),
-            }
             if let Some(document) = &documents.combined {
                 let path = directory.join(format!("{prefix}-combined.ass"));
                 match Self::write_ass(&path, document).await {
@@ -628,15 +618,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         path,
                         title: format!("弹幕 + 字幕 · {label}"),
                         language: subtitle.language.clone(),
-                        selected: true,
+                        selected: false,
                     }),
                     Err(error) => log::warn!("failed to write combined ASS track: {error}"),
                 }
             }
+            let path = directory.join(format!("{prefix}-subtitle.ass"));
+            match Self::write_ass(&path, document).await {
+                Ok(()) => tracks.push(SubtitleTrackFile {
+                    path,
+                    title: format!("字幕 · {label}"),
+                    language: subtitle.language.clone(),
+                    selected: false,
+                }),
+                Err(error) => log::warn!("failed to write subtitle ASS track: {error}"),
+            }
         }
-        if !tracks.iter().any(|track| track.selected)
-            && let Some(track) = tracks.first_mut()
-        {
+        if let Some(track) = tracks.first_mut() {
             track.selected = true;
         }
         Ok(tracks)
