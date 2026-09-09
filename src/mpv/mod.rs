@@ -17,6 +17,7 @@ use tokio::{
 
 pub struct MpvControl {
     last_rpc_ts: Cell<i64>,
+    loaded_subtitle_generation: Cell<Option<u64>>,
     mpv_command_tx: async_channel::Sender<String>,
     mpv_command_rx: async_channel::Receiver<String>,
     ctx: Rc<DMLContext>,
@@ -28,6 +29,7 @@ impl MpvControl {
             mpv_command_tx: tx,
             mpv_command_rx: rx,
             last_rpc_ts: Cell::new(0),
+            loaded_subtitle_generation: Cell::new(None),
             ctx,
         }
     }
@@ -55,6 +57,7 @@ impl MpvControl {
     }
 
     pub async fn reload_edl_video(&self, stream_info: &HashMap<&str, String>) -> Result<()> {
+        self.loaded_subtitle_generation.set(None);
         let edl = format!(
             "edl://!no_clip;!no_chapters;%{0}%{1};!new_stream;!no_clip;!no_chapters;%{2}%{3}",
             stream_info["url_a"].chars().count(),
@@ -75,6 +78,29 @@ impl MpvControl {
                 self.ctx.cm.title.borrow().replace(r#"""#, r#"\""#)
             ))
             .await?;
+        Ok(())
+    }
+
+    pub async fn load_subtitle_tracks(
+        &self, generation: u64, tracks: &[crate::danmaku::SubtitleTrackFile],
+    ) -> Result<()> {
+        if self.loaded_subtitle_generation.get() == Some(generation) {
+            return Ok(());
+        }
+        for track in tracks {
+            let command = serde_json::json!({
+                "command": [
+                    "sub-add",
+                    track.path.to_string_lossy(),
+                    if track.selected { "select" } else { "auto" },
+                    track.title,
+                    track.language,
+                ],
+                "async": true,
+            });
+            self.mpv_command_tx.send(format!("{command}\n")).await?;
+        }
+        self.loaded_subtitle_generation.set(Some(generation));
         Ok(())
     }
 
@@ -128,19 +154,6 @@ impl MpvControl {
                 let h = j.pointer("/data/h").ok_or_else(|| dmlerr!())?.as_u64().unwrap();
                 if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
                     let _ = self.ctx.mtx.send(DMLMessage::SetVideoInfo((w, h, 0))).await;
-                    self.mpv_command_tx
-                        .send(
-                            r#"{ "command": ["sub-remove", "1"], "async": true }
-                              "#
-                            .into(),
-                        )
-                        .await?;
-                    self.mpv_command_tx
-                        .send(format!(
-                            "{{ \"command\": [\"sub-add\", \"{}\"], \"async\": true }}\n",
-                            self.ctx.im.get_danmaku_socket_path()
-                        ))
-                        .await?;
                 }
             } else if rid.as_u64().eq(&Some(514)) {
                 match j.pointer("/data") {
@@ -214,9 +227,21 @@ impl MpvControl {
             if cmds.fs.is_some() {
                 let _ = self.ctx.mtx.send(DMLMessage::SetFontScale(cmds.fs.unwrap())).await;
             } else if cmds.fsup {
-                let _ = self.ctx.mtx.send(DMLMessage::SetFontScale(self.ctx.cm.font_scale.get() + 0.15)).await;
+                let _ = self
+                    .ctx
+                    .mtx
+                    .send(DMLMessage::SetFontScale(
+                        self.ctx.cm.font_scale.get() + 0.15,
+                    ))
+                    .await;
             } else if cmds.fsdown {
-                let _ = self.ctx.mtx.send(DMLMessage::SetFontScale(self.ctx.cm.font_scale.get() - 0.15)).await;
+                let _ = self
+                    .ctx
+                    .mtx
+                    .send(DMLMessage::SetFontScale(
+                        self.ctx.cm.font_scale.get() - 0.15,
+                    ))
+                    .await;
             }
             if cmds.fa.is_some() {
                 let _ = self.ctx.mtx.send(DMLMessage::SetFontAlpha(cmds.fa.unwrap())).await;

@@ -287,8 +287,9 @@ impl Bilibili {
         ) {
             let u = self.ctx.cm.bvideo_info.borrow().base_url.clone();
             // let (bvid, cid, title, referer, _season_type) = self.get_page_info_ep(&u, page).await?;
-            let (_bvid, cid, title, link) = self.get_page_info_ep(&u, page).await?;
+            let (bvid, cid, title, link) = self.get_page_info_ep(&u, page).await?;
             ret.insert("title", title);
+            ret.insert("bili_bvid", bvid);
             ret.insert("bili_cid", cid);
             let resp =
                 client.get(&link).header("Referer", &link).header("Cookie", cookies).send().await?.text().await?;
@@ -316,7 +317,7 @@ impl Bilibili {
             //     serde_json::from_str(re.captures(&resp).ok_or_else(|| dmlerr!())?[1].to_string().as_ref())?;
             let keys = crate::utils::bili_wbi::get_wbi_keys(&cookies).await?;
             let params2 = vec![
-                ("bvid", bvid),
+                ("bvid", bvid.clone()),
                 ("cid", cid.clone()),
                 ("qn", String::from("0")),
                 ("fnval", String::from("848")),
@@ -333,6 +334,7 @@ impl Bilibili {
                 .await?;
             let j = j.pointer("/data").ok_or_else(|| dmlerr!())?;
             ret.insert("title", title);
+            ret.insert("bili_bvid", bvid);
             ret.insert("bili_cid", cid);
             f1(&j, &mut ret)?;
         }

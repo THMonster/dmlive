@@ -1,6 +1,7 @@
 use crate::config::{ConfigManager, Platform};
 use crate::dmlerr;
 use anyhow::Result;
+use std::path::PathBuf;
 use std::rc::Rc;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -58,6 +59,7 @@ impl IPCManager {
             ))
             .await;
         }
+        let _ = tokio::fs::remove_dir_all(self.get_process_temp_dir()).await;
         Ok(())
     }
 
@@ -130,6 +132,14 @@ impl IPCManager {
         // } else {
         format!("tcp://127.0.0.1:{}", &self.danmaku_port)
         // }
+    }
+
+    pub fn get_process_temp_dir(&self) -> PathBuf {
+        PathBuf::from(&self.base_socket_dir).join(format!("dmlive-{}", &self.base_uuid))
+    }
+
+    pub fn get_subtitle_dir(&self) -> PathBuf {
+        self.get_process_temp_dir().join("subtitles")
     }
 
     pub async fn get_danmaku_socket(&self) -> Result<Box<dyn DMLStream>> {

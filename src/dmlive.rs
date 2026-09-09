@@ -27,6 +27,11 @@ pub enum DMLMessage {
     RequestRestart,
     RequestExit,
     StreamReady,
+    SubtitleTracksReady {
+        generation: u64,
+        cid: String,
+        tracks: Vec<crate::danmaku::SubtitleTrackFile>,
+    },
 }
 
 #[allow(unused)]
@@ -112,7 +117,23 @@ impl DMLive {
                 info!("video info: w {w} h {h} pts {pts}");
                 // danmaku task
                 if matches!(self.ctx.cm.site, crate::config::Site::BiliVideo) {
-                    let _ = self.dm.run_bilivideo(16.0 * h as f64 / w as f64 / 9.0).await;
+                    if let Some((generation, bvid, cid)) = self.dm.bili_video_info() {
+                        let ratio = if w == 0 { 1.0 } else { 16.0 * h as f64 / w as f64 / 9.0 };
+                        match self.dm.build_bilivideo_tracks(generation, &bvid, &cid, ratio).await {
+                            Ok(tracks) => {
+                                let _ = self
+                                    .ctx
+                                    .mtx
+                                    .send(DMLMessage::SubtitleTracksReady {
+                                        generation,
+                                        cid,
+                                        tracks,
+                                    })
+                                    .await;
+                            }
+                            Err(error) => log::warn!("failed to build video subtitle tracks: {error}"),
+                        }
+                    }
                 } else {
                     self.dm.set_ratio_scale((16.0 / 9.0) / (w as f64 / h as f64));
                     // let _ = self.dm.run(16.0 * h as f64 / w as f64 / 9.0, pts).await;
@@ -137,6 +158,19 @@ impl DMLive {
                             let _ = self.fc.write_record_task().await;
                         }
                     }
+                }
+            }
+            DMLMessage::SubtitleTracksReady {
+                generation,
+                cid,
+                tracks,
+            } => {
+                if self.dm.is_current_bili_video(generation, &cid) {
+                    if let Err(error) = self.mc.load_subtitle_tracks(generation, &tracks).await {
+                        log::warn!("failed to load video subtitle tracks: {error}");
+                    }
+                } else {
+                    info!("discarding stale subtitle tracks for cid {cid}");
                 }
             }
         }
@@ -197,7 +231,10 @@ impl DMLive {
         let mut stream_info = self.sf.run().await?;
         self.ctx.cm.set_stream_type(&stream_info);
         *self.ctx.cm.title.borrow_mut() = stream_info.remove("title").unwrap();
-        self.dm.set_bili_video_cid(stream_info.get("bili_cid").unwrap_or(&"".to_string())).await;
+        self.dm.set_bili_video_info(
+            stream_info.get("bili_bvid").map(String::as_str).unwrap_or(""),
+            stream_info.get("bili_cid").map(String::as_str).unwrap_or(""),
+        );
         self.mc.reload_edl_video(&stream_info).await?;
         Ok(())
     }
